@@ -36,6 +36,9 @@ workspace/
 
 # Test / Eval data
 tests/eval_data/hidden/
+tests/test_model_call.py
+tests/weather_report_v2.py
+tests/generate_weather_report.py
 
 # Environment
 .env
