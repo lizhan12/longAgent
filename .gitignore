@@ -43,3 +43,17 @@ tests/generate_weather_report.py
 # Environment
 .env
 .env.local
+
+# Personal files
+1.txt
+*.pdf
+
+# Runtime directories
+evals/
+mcp_servers/
+scripts/
+skills/
+static/
+
+# Generated test artifacts
+tests/*.docx
