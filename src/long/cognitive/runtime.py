@@ -809,7 +809,7 @@ class CognitiveRuntime:
                     tools_list,
                     purpose="chat",
                 ),
-                timeout=300.0,
+                timeout=120.0,
             )
         except TimeoutError:
             context.llm_timeout_count += 1
@@ -817,6 +817,12 @@ class CognitiveRuntime:
         except Exception as e:
             context.llm_timeout_count += 1
             return {"_error": f"LLM 调用失败: {e}"}
+
+        logger.debug(
+            "THINK round %d: messages=%d, tool_calls=%s, content=%s",
+            context.round_count, len(context.messages),
+            bool(response.tool_calls), bool(response.content),
+        )
 
         if response.tool_calls:
             context.consecutive_empty_responses = 0
@@ -1455,9 +1461,17 @@ class CognitiveRuntime:
                 "tool_calls": all_tool_calls,
             })
 
+        # 构建 tool_call_id 映射: 从原始 LLM 响应中获取 tool_call_id
+        tool_id_map: dict[str, str] = {}
+        if llm_response and llm_response.tool_calls:
+            for tc in llm_response.tool_calls:
+                tool_id_map[tc["name"]] = tc["id"]
+
         for exec_result in executed:
             tool_name = exec_result.get("name", "")
             raw_result = exec_result["result"]
+            # 使用原始 LLM 响应的 tool_call_id，避免空字符串
+            tool_call_id = tool_id_map.get(tool_name, exec_result.get("id", ""))
             # 在工具结果前注入归因标记，让 LLM 明确知道这是自己调用的工具返回的结果
             # 使用指令式标记而非描述式，更有效对抗 LLM 的"您提供"倾向
             if tool_name == "tavily_search":
@@ -1471,7 +1485,7 @@ class CognitiveRuntime:
             context.messages.append({
                 "role": "tool",
                 "content": attributed_result,
-                "tool_call_id": exec_result["id"],
+                "tool_call_id": tool_call_id,
             })
 
         return {}
