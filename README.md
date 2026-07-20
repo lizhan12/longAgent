@@ -1,12 +1,89 @@
-# Long
+# Long — 可控 AI 智能系统框架
 
-可控 AI 智能系统框架 —— 面向复杂任务的形式化约束与自主执行引擎。
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-560%20passing-brightgreen)](tests/)
 
-## 概述
+**Long** 是一个面向复杂任务的 AI Agent 框架，核心思路是通过**形式化中间表示（PlanIR）** 和**状态机**对 LLM 的输出进行约束，将 Agent 的执行流程从开放式生成收敛到可验证、可审计的受控路径上。
 
-Long 是一个 Python AI Agent 框架，核心思路是通过**形式化中间表示（PlanIR）** 和**状态机**对 LLM 的输出进行约束，将 Agent 的执行流程从开放式生成收敛到可验证、可审计的受控路径上。
+---
 
-与常见的 AutoGPT-style 自由循环不同，Long 在每次 LLM 调用后引入多层结构化的校验链：类型检查 → 约束验证 → LTL 时序逻辑校验 → 状态转移。这一设计使其更适用于对可靠性和可审计性有要求的场景，如自动化开发、数据处理流水线、合规操作等。
+## 特性
+
+### 🛡️ 三层防御体系
+| 层级 | 技术 | 作用 |
+|------|------|------|
+| L1 | **AgentStateMachine** | 编译时检查 PlanIR 路径合法性，运行时检查每步状态转移 |
+| L2 | **LTLValidator** | 6 条默认时序逻辑规则（可扩展），运行时 + 终态双重校验 |
+| L3 | **ConstraintValidator** | 每步执行前 Schema/权限/预算检查，执行后状态更新 + 日志 |
+
+### 🧠 五层记忆架构
+```
+短期记忆 (RingBuffer) → 工作记忆 (Dict) → 语义记忆 (ChromaDB) 
+                                     → 情景记忆 (SQLite) 
+                                     → 过程记忆 (SQLite)
+```
+- 准入评分 → 衰减策略 → 冲突检测 → 自动提升
+- 衰减公式: `strength(t) = initial × exp(-λ × hours)`
+
+### 🔧 Harness 工程八大支柱
+| 支柱 | 说明 |
+|------|------|
+| **执行引擎** | LLMClient(流式+重试+熔断) + ProcessSandbox |
+| **工具层** | UnifiedToolRegistry(LOCAL/MCP/SKILL) + 安全扫描 |
+| **记忆系统** | 五层记忆 + 准入/提升/衰减/冲突检测 |
+| **编排引擎** | TaskComplexityClassifier + PlanIR DAG + 状态机 |
+| **输出治理** | ConstraintValidator + TypeChecker + OutputGuard(PII/敏感词) |
+| **安全层** | security.yaml + ProcessSandbox + WorkspaceManager |
+| **可观测层** | Trace/Span + AlertManager + ResourceMonitor |
+| **反馈回路** | EvalPipeline → AutoOptimizer(OODA) → FeedbackLoop |
+
+### 🔒 安全特性
+- **进程沙箱** — `setrlimit` 资源限制 + 代码预扫描
+- **路径边界** — 所有文件操作经 WorkspaceManager 校验
+- **PII 检测** — 身份证/手机号/邮箱/银行卡正则匹配 + 自动掩码
+- **权限清单** — 未声明工具默认拒绝（fail-closed）
+- **熔断器** — CLOSED → OPEN → HALF_OPEN 自动恢复
+- **预算控制** — 日预算 + 任务预算 + 自动重置
+
+---
+
+## 快速开始
+
+### 1. 安装
+```bash
+# 使用 uv（推荐）
+uv sync
+
+# 或使用 pip
+pip install -e .
+```
+
+### 2. 配置 LLM
+```bash
+cp .env.example .env
+# 编辑 .env 填入你的 API Key 和 Base URL
+```
+
+### 3. 启动
+```bash
+python main.py
+```
+
+### 4. 可用命令
+| 命令 | 说明 |
+|------|------|
+| `/status` | 查看系统状态 |
+| `/skill` | 管理 Skill |
+| `/mcp` | 管理 MCP 服务器 |
+| `/history` | 查看对话历史 |
+| `/eval` | 运行评估 |
+| `/health` | 系统健康报告 |
+| `/traces` | 查看 Trace 记录 |
+| `/optimization` | 优化器状态 |
+| `exit` / `/exit` | 退出 |
+
+---
 
 ## 架构
 
@@ -49,67 +126,43 @@ User Input
 横向支撑层:
 ┌──────────┐ ┌──────────┐ ┌────────────┐ ┌──────────────┐
 │  Memory  │ │Tracing & │ │   Auto     │ │  Eval        │
-│  (三栖)   │ │Logging   │ │ Optimizer  │ │  Pipeline    │
+│  (五层)   │ │Logging   │ │ Optimizer  │ │  Pipeline    │
 └──────────┘ └──────────┘ └────────────┘ └──────────────┘
 ```
 
-## 核心模块
+---
 
-| 模块 | 路径 | 说明 |
-|------|------|------|
-| **Cognitive Runtime** | `cognitive/` | StateGraph 驱动的执行引擎，将 Agent 循环抽象为 Think → Act → Observe → Reflect 的有向图 |
-| **PlanIR** | `ir/` | 结构化中间表示：计划解析器、状态机、LTL 校验器、类型检查器、约束验证器 |
-| **LLM Client** | `llm/` | 封装 OpenAI SDK，内置重试策略、Fallback 模型降级、响应缓存和安全边界中间件 |
-| **Memory** | `memory/` | 三栖记忆架构：滑动窗口（短期/工作） + 向量检索（语义/情景/过程） + 语义压缩 |
-| **Unified Tool Registry** | `capabilities/` | 统一注册与调用本地工具、MCP 工具和 Skill 能力 |
-| **Sandbox** | `sandbox/` | 提供代码沙箱执行环境，支持进程隔离、安全策略和资源监控 |
-| **Interaction** | `interaction/` | 会话管理、事件总线、HITL 交互、CLI/WebUI 适配器、流式输出 |
-| **Observability** | `observability/` | 全链路 Trace/Span 追踪、结构化日志、健康仪表盘 |
-| **Optimization** | `optimization/` | OODA 自动优化循环（Observe → Orient → Decide → Act），指标收集、模式分析、人工审批 |
-| **Eval Pipeline** | `eval/` | 多层评估体系：结果层、过程层、系统层、对抗性测试 |
-| **Agent Subsystem** | `agent/` | 子 Agent 调度：Worker（执行）、Planner（规划）、Critic（审查）、Runner（编排）、Escalation（升级） |
+## 配置
 
-## 技术要点
+### LLM 配置 (`configs/llm.yaml`)
 
-### 计划验证链
-
-每个 LLM 输出的计划在执行前经过四级校验：
-
-1. **Type Checking** — 校验 Action 参数类型是否匹配 Schema
-2. **Constraint Validation** — 校验步骤间依赖、变量引用的完整性
-3. **LTL Validation** — 基于线性时序逻辑检查执行序列是否满足安全/活性规约
-4. **State Machine** — 状态转移合法性检查，仅允许预定义的迁移路径
-
-### 多层评估体系
-
-```
-结果层 Outcome  ← 最终产出质量（运行/测试验证）
-过程层 Process  ← 计划结构、步骤效率、资源使用
-系统层 System   ← 规则应用、约束遵守、安全性
-对抗层 Adversarial ← 边界案例、异常输入模糊测试
+```yaml
+llm:
+  provider: openai          # 兼容 OpenAI 协议
+  model: sensenova-6.7-flash-lite
+  api_key: ${LLM_API_KEY}   # 从 .env 读取
+  base_url: ${LLM_BASE_URL:}
+  fallback:
+    chain:
+      - deepseek-v4-flash    # 主模型失败时兜底
 ```
 
-### 自动优化闭环
+### 多模型路由
+| 用途 | 模型 |
+|------|------|
+| 规划 (planning) | sensenova-6.7-flash-lite |
+| 修复 (repair) | deepseek-v4-flash |
+| 评估 (judge) | deepseek-v4-flash |
+| 对话 (chat) | sensenova-6.7-flash-lite |
 
-基于 OODA 循环，系统在运行中持续收集指标（延迟、成功率、预算消耗），通过 PatternAnalyzer 识别可优化点，生成 OptimizationProposal，经 HumanApprovalGate 审批后由 ChangeApplier 执行变更。
-
-### 配置驱动
-
-系统通过 `configs/` 目录下的 YAML 文件进行配置，覆盖 LLM、执行、记忆、交互、功能开关、可观测性等维度，支持动态加载。
-
-## 快速开始
-
+### 环境变量 (`.env`)
 ```bash
-# 安装依赖
-pip install -e .
-
-# 配置模型
-cp .env.example .env
-# 编辑 .env 填入 API Key 和模型配置
-
-# 启动交互
-python main.py
+LLM_API_KEY=your-api-key
+LLM_BASE_URL=https://your-endpoint/v1
+# TAVILY_API_KEY=your-tavily-key   # 可选：网络搜索
 ```
+
+---
 
 ## 项目结构
 
@@ -117,33 +170,75 @@ python main.py
 long/
 ├── main.py                 # 入口
 ├── configs/                # YAML 配置文件
+│   ├── llm.yaml            # LLM 模型配置
+│   ├── security.yaml       # 安全与部署配置
+│   ├── feature_flags.yaml  # 渐进式发布
+│   └── ...
 ├── src/long/
 │   ├── cli.py              # CLI 入口与 LongSystem 集成
-│   ├── cognitive/          # 认知运行时（StateGraph、Planner、Reflection）
-│   ├── ir/                 # 形式化中间表示（PlanIR、StateMachine、LTL）
-│   ├── llm/                # LLM 客户端（调用、缓存、中间件）
-│   ├── memory/             # 三栖记忆系统
+│   ├── agent/              # 子 Agent 调度 (Worker/Planner/Critic/Runner/Escalation)
 │   ├── capabilities/       # 工具注册与 MCP/Skill 支持
-│   ├── sandbox/            # 沙箱执行环境
-│   ├── interaction/        # 交互控制器与适配器
-│   ├── observability/      # 追踪、日志、仪表盘
-│   ├── optimization/       # 自动优化引擎
-│   ├── eval/               # 评估流水线
-│   ├── agent/              # 子 Agent 调度
-│   └── session/            # 会话持久化
-├── tests/                  # 测试用例
-└── scripts/                # 辅助脚本
+│   ├── cognitive/          # 认知运行时 (StateGraph/Planner/Reflection)
+│   ├── components/         # 组件层 (ToolManager/PromptBuilder/SessionManager/Orchestrator)
+│   ├── eval/               # 评估流水线 (结果/过程/系统/对抗)
+│   ├── harness/            # 治理层 (FeatureFlag/Alert/OutputGuard/Permission/FeedbackLoop)
+│   ├── interaction/        # 交互控制器与适配器 (CLI/WebUI)
+│   ├── ir/                 # 形式化中间表示 (PlanIR/StateMachine/LTL/TypeChecker)
+│   ├── llm/                # LLM 客户端 (调用/缓存/中间件/降级)
+│   ├── memory/             # 五层记忆系统 (短期/工作/语义/情景/过程)
+│   ├── observability/      # 追踪/日志/仪表盘
+│   ├── optimization/       # 自动优化引擎 (OODA 循环)
+│   ├── sandbox/            # 沙箱执行环境 (进程隔离/资源限制/代码扫描)
+│   └── session/            # 会话持久化/偏好/画像
+├── tests/                  # 560+ 测试用例
+│   ├── test_e2e_security.py    # 安全 E2E 测试 (21)
+│   ├── test_e2e_harness.py     # 治理 E2E 测试 (14)
+│   ├── test_e2e_llm.py         # LLM E2E 测试 (16)
+│   └── test_e2e_real_llm.py    # 真实 LLM 调用测试 (12)
+└── .env.example            # 环境变量模板
 ```
 
-## 依赖
+---
 
-- Python >= 3.12
-- openai — LLM API 调用
-- pydantic — 数据校验
-- rich / prompt-toolkit — 终端交互
-- fastapi / uvicorn — Web 服务
-- pyyaml — 配置加载
+## 测试
 
-## License
+```bash
+# 运行所有测试
+uv run pytest tests/ -v
 
-MIT
+# 运行真实 LLM 调用测试（需要配置 API Key）
+uv run pytest tests/test_e2e_real_llm.py -v -s
+
+# 运行安全测试
+uv run pytest tests/test_e2e_security.py -v
+
+# 查看测试覆盖率
+uv run pytest tests/ --cov=src/long --cov-report=html
+```
+
+### 测试统计
+| 测试类型 | 数量 | 说明 |
+|----------|------|------|
+| 原有单元测试 | ~500 | 各模块独立测试 |
+| 安全 E2E 测试 | 21 | 路径穿越/异常抑制/条件 fail-closed/PII 掩码/权限 |
+| 治理 E2E 测试 | 14 | 并行工具/日预算/熔断器/YAML 回退 |
+| LLM E2E 测试 | 16 | Anthropic 路径/skill caller/验证反转/list_files |
+| 真实 LLM 测试 | 12 | 实际调用 SenseNova API 验证完整链路 |
+
+---
+
+## 许可
+
+MIT License
+
+---
+
+## 技术栈
+
+- **Python** ≥ 3.12
+- **OpenAI SDK** — LLM API 调用（兼容 OpenAI/SenseNova/DeepSeek 等）
+- **Pydantic** — 数据校验与 Schema 定义
+- **Rich / prompt-toolkit** — 终端交互
+- **FastAPI / uvicorn** — Web 服务
+- **ChromaDB** — 向量存储
+- **Matplotlib** — 图表生成
