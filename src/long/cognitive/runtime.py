@@ -254,6 +254,10 @@ class CognitiveContext:
     max_search_count: int = 3
     last_action_was_search: bool = False
 
+    # 重复工具调用检测
+    consecutive_duplicate_calls: int = 0
+    last_tool_call_key: str = ""
+
     messages: list[dict[str, Any]] = field(default_factory=list)
 
     tool_results: dict[str, str] = field(default_factory=dict)
@@ -501,6 +505,9 @@ class CognitiveRuntime:
 
         self._graph = self._build_graph()
         self._graph._on_span_created = on_span_created
+
+        # 工具调用缓存：key=f"{tool_name}:{json_args}" → value=(result, timestamp)
+        self._tool_call_cache: dict[str, tuple[str, float]] = {}
 
     def _build_graph(self) -> StateGraph:
         graph = StateGraph()
@@ -771,6 +778,20 @@ class CognitiveRuntime:
                     context.messages[-1]["content"] += search_hint
                 else:
                     context.messages.append({"role": "user", "content": search_hint})
+
+        # 检测重复工具调用：连续多次调用同一工具，强制生成回复
+        if context.consecutive_duplicate_calls >= 2:
+            force_hint = (
+                "\n\n## ⚠️ 重复工具调用检测\n"
+                "你已经连续多次调用同一个工具并获得了相同的结果。"
+                "请立即基于已有数据生成最终回答，不要再调用任何工具。"
+                "如果确实需要再次查询，请先说明原因。"
+            )
+            last_msg = context.messages[-1] if context.messages else None
+            if last_msg and last_msg.get("role") == "user":
+                context.messages[-1]["content"] += force_hint
+            else:
+                context.messages.append({"role": "user", "content": force_hint})
 
         try:
             tools_list = ctx.get("_tools", [])
@@ -1233,6 +1254,38 @@ class CognitiveRuntime:
                     context.last_action_was_search = len(allowed_searches) > 0
 
         for tc in other_calls:
+            # 检测重复工具调用
+            tool_key = self._make_tool_call_key(tc["name"], tc["arguments"])
+            cached = self._tool_call_cache.get(tool_key)
+            is_duplicate = cached is not None
+
+            if is_duplicate:
+                # 命中缓存，直接返回缓存结果
+                logger.info("拦截重复工具调用: %s (key=%s)", tc["name"], tool_key)
+                cached_result, _ts = cached
+                context.tool_history.append({
+                    "name": tc["name"],
+                    "arguments": tc["arguments"],
+                    "result": cached_result,
+                })
+                executed.append({
+                    "id": tc["id"],
+                    "name": tc["name"],
+                    "result": cached_result,
+                    "intercepted": True,
+                    "cached": True,
+                })
+                # 更新连续重复计数
+                if tool_key == context.last_tool_call_key:
+                    context.consecutive_duplicate_calls += 1
+                else:
+                    context.consecutive_duplicate_calls = 0
+                context.last_tool_call_key = tool_key
+                continue
+
+            # 首次调用，正常执行
+            context.consecutive_duplicate_calls = 0
+            context.last_tool_call_key = ""
             sr = await self._execute_single_tool(tc["name"], tc["arguments"], context)
             if isinstance(sr, Exception):
                 executed.append({
@@ -1244,10 +1297,13 @@ class CognitiveRuntime:
             else:
                 executed.append(sr)
                 if context and sr.get("intercepted") is False:
+                    # 缓存工具结果
+                    result_text = sr.get("result", "")
+                    self._tool_call_cache[tool_key] = (result_text, time.time())
                     context.tool_history.append({
                         "name": tc["name"],
                         "arguments": tc["arguments"],
-                        "result": sr["result"],
+                        "result": result_text,
                     })
                     context.last_action_was_search = False
 
@@ -1256,6 +1312,12 @@ class CognitiveRuntime:
         if all_intercepted and context:
             context.needs_retry = False
         return {"_all_intercepted": all_intercepted}
+
+    @staticmethod
+    def _make_tool_call_key(tool_name: str, arguments: dict[str, Any]) -> str:
+        """生成工具调用的缓存 key，包含工具名和参数"""
+        args_str = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
+        return f"{tool_name}:{args_str}"
 
     async def _execute_single_tool(
         self, tool_name: str, arguments: dict[str, Any], context: CognitiveContext | None

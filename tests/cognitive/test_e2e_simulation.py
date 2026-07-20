@@ -507,3 +507,56 @@ class TestEndToEndFlow:
 
         print(f"\n✅ 记忆集成测试通过!")
         print(f"  Memory 存储: {len(mock_memory.stored)} 条")
+
+
+class TestDuplicateToolCall:
+    """重复工具调用检测测试"""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_tool_calls_are_cached(self):
+        """验证相同工具+参数调用被缓存，第二次直接返回缓存结果"""
+        runtime = CognitiveRuntime(
+            llm_chat_fn=lambda msgs, **kw: MockLLMResponse(content="ok"),
+            llm_chat_with_tools_fn=lambda msgs, tools, **kw: MockLLMResponse(
+                tool_calls=[{"id": "call_1", "name": "query_weather", "arguments": {"city": "杭州"}}],
+            ),
+            tool_execute_fn=lambda name, args: f"结果:{name}({args})",
+            output_fn=lambda text: None,
+        )
+
+        # 验证 _make_tool_call_key
+        key1 = runtime._make_tool_call_key("query_weather", {"city": "杭州"})
+        key2 = runtime._make_tool_call_key("query_weather", {"city": "杭州"})
+        key3 = runtime._make_tool_call_key("query_weather", {"city": "北京"})
+        assert key1 == key2, "相同参数应生成相同 key"
+        assert key1 != key3, "不同参数应生成不同 key"
+
+        # 验证 _tool_call_cache
+        runtime._tool_call_cache[key1] = ("结果:query_weather({'city': '杭州'})", 0.0)
+        assert key1 in runtime._tool_call_cache
+        cached, _ts = runtime._tool_call_cache[key1]
+        assert "杭州" in cached
+
+    @pytest.mark.asyncio
+    async def test_make_tool_call_key_stability(self):
+        """验证缓存 key 的稳定性和可读性"""
+        runtime = CognitiveRuntime.__new__(CognitiveRuntime)
+
+        key = runtime._make_tool_call_key("query_weather", {"city": "杭州", "units": "metric"})
+        assert "query_weather" in key
+        assert "杭州" in key
+        assert "metric" in key
+
+        # 不同参数顺序应生成相同 key
+        key_a = runtime._make_tool_call_key("test", {"b": 2, "a": 1})
+        key_b = runtime._make_tool_call_key("test", {"a": 1, "b": 2})
+        assert key_a == key_b, "不同参数顺序应生成相同 key"
+
+    @pytest.mark.asyncio
+    async def test_different_tools_different_keys(self):
+        """验证不同工具名生成不同 key"""
+        runtime = CognitiveRuntime.__new__(CognitiveRuntime)
+
+        key1 = runtime._make_tool_call_key("query_weather", {"city": "杭州"})
+        key2 = runtime._make_tool_call_key("tavily_search", {"city": "杭州"})
+        assert key1 != key2, "不同工具名应生成不同 key"
