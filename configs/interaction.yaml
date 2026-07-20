@@ -1,0 +1,18 @@
+# Interaction 配置
+
+# CLI 配置
+cli:
+  prompt: "> "
+  history_size: 1000
+  auto_suggest: true
+  rich_output: true
+
+# 流式输出配置
+streaming:
+  max_buffer_size: 10000
+  token_flush_interval: 5
+
+# 会话配置
+session:
+  max_sessions: 10
+  idle_timeout: 1800

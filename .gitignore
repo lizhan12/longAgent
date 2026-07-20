@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+docs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AI tools
+.claude/
+.trae/
+
+# Project runtime
+workspace/
+*.log
+
+# Test / Eval data
+tests/eval_data/hidden/
+
+# Environment
+.env
+.env.local

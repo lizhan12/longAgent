@@ -1,0 +1,47 @@
+# 渐进式发布配置 — Feature Flags
+# Harness Engineering: 通过 Feature Flag 灰度新 Prompt / 模型
+#
+# 策略: session_hash — 基于 session_id 哈希做粘性分流
+# 同一会话始终命中同一变体，体验一致
+
+feature_flags:
+
+  # Prompt 版本灰度
+  prompt_version:
+    strategy: session_hash
+    variants:
+      - name: stable
+        weight: 80
+        file: AGENTS.md
+      - name: canary
+        weight: 20
+        file: AGENTS.md
+    sticky: true
+
+  # 模型灰度切换
+  model_version:
+    strategy: session_hash
+    variants:
+      - name: primary
+        weight: 70
+        model: sensenova-6.7-flash-lite
+      - name: fallback
+        weight: 30
+        model: deepseek-v4-flash
+    sticky: true
+
+  # 输出 PII 过滤
+  output_pii_filter:
+    enabled: true
+    strategy: global
+
+  # 记忆整合器
+  memory_consolidator:
+    enabled: true
+    strategy: global
+
+  # 自动评估反馈
+  auto_eval_feedback:
+    enabled: true
+    strategy: global
+    approval_required: true

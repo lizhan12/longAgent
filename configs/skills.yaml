@@ -1,0 +1,27 @@
+# Skill 配置
+
+skills:
+  # Skill 搜索路径
+  search_paths:
+    - ./skills
+
+  # 自动发现
+  auto_discover: true
+
+  # 权限策略
+  permissions:
+    # 允许的权限列表（空=全部允许）
+    allowed: []
+    # 禁止的权限列表
+    denied:
+      - filesystem:write:/
+      - network:listen
+
+  # 加载策略
+  loading:
+    # 安全扫描
+    enable_scanner: true
+    # 受限导入
+    safe_import: true
+    # 热重载
+    hot_reload: true

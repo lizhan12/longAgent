@@ -1,0 +1,36 @@
+# Workspace 配置
+
+# 工作区根目录
+root: "./workspace"
+
+# 自动创建目录结构
+auto_create: true
+
+# 临时目录清理策略
+cleanup:
+  enabled: true
+  max_age_hours: 24
+  cleanup_on_startup: false
+
+# 审计配置
+audit:
+  enabled: true
+  strict_mode: false
+  log_to_file: null
+  max_records: 10000
+
+# 子目录配置
+directories:
+  data: "data"
+  chroma: "chroma"
+  sqlite: "sqlite"
+  traces: "traces"
+  skills: "skills"
+  sandbox: "sandbox"
+  cache: "cache"
+  logs: "logs"
+  output: "output"
+  temp: "temp"
+  knowledge: "knowledge"
+  subagents: "subagents"
+  agents: "agents"

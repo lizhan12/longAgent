@@ -1,0 +1,50 @@
+# IR 配置
+
+# 类型检查
+type_check:
+  strict: false
+  allowed_param_keys:
+    - query
+    - top_k
+    - filters
+    - search_type
+    - tool_name
+    - parameters
+    - timeout
+    - endpoint
+    - method
+    - headers
+    - body
+    - query_params
+    - server_name
+    - arguments
+    - skill_name
+    - reasoning_type
+    - premises
+    - max_steps
+    - content
+    - max_length
+    - style
+    - format
+    - destination
+    - request_type
+    - message
+    - options
+    - timeout_seconds
+
+# 白名单
+whitelist:
+  tools: []
+  apis: []
+  mcp_servers: []
+  skills: []
+
+# 解析配置
+parser:
+  max_retries: 3
+  auto_repair: true
+
+# 状态转换规则
+# 已迁移到 state_machine.py 的条件路由
+# 此处仅保留自定义扩展规则（覆盖默认条件路由）
+state_transitions: []

@@ -1,0 +1,41 @@
+# Eval 评估配置
+
+eval:
+  # 结果层评估
+  outcome:
+    strict_mode: false
+    accuracy_threshold: 0.7
+
+  # 过程层评估
+  process:
+    num_judges: 3
+    majority_threshold: 0.6
+    rule_weights:
+      output_without_search: 0.2
+      output_without_reason: 0.2
+      ltl_violation: 0.3
+
+  # 系统层评估
+  system:
+    stability_threshold: 0.8
+    min_runs: 10
+
+  # 综合评分权重
+  weights:
+    outcome: 0.3
+    process: 0.5
+    system: 0.2
+
+  # 人工审核
+  human_review:
+    auto_review_threshold: 0.6
+    # 80% 自动 + 20% 人工
+    auto_ratio: 0.8
+    sample_categories:
+      - adversarial
+      - boundary
+
+  # 数据集管理
+  dataset:
+    rotation_period_days: 30
+    include_hidden: false

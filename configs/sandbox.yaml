@@ -1,0 +1,52 @@
+# Sandbox 沙箱配置
+
+sandbox:
+  # 默认隔离级别: none, process, container, microvm
+  default_isolation: process
+
+  # 代码预扫描
+  enable_scanner: true
+
+  # 默认资源限制
+  defaults:
+    cpu_time: 30.0          # CPU 时间（秒）
+    memory: 536870912       # 内存（512 MB）
+    disk: 104857600         # 磁盘（100 MB）
+    network: false          # 禁止网络
+    processes: 10           # 最大进程数
+    file_descriptors: 64    # 最大文件描述符数
+
+  # 资源监控
+  monitor:
+    warn_threshold: 0.8     # 80% 阈值告警
+    kill_threshold: 1.0     # 100% 强制终止
+    poll_interval: 0.5      # 轮询间隔（秒）
+
+  # 按语言覆盖
+  language_overrides:
+    python:
+      cpu_time: 60.0
+      memory: 1073741824    # 1 GB
+      processes: 5
+    shell:
+      cpu_time: 15.0
+      memory: 268435456     # 256 MB
+      processes: 3
+    javascript:
+      cpu_time: 30.0
+      memory: 536870912     # 512 MB
+
+  # 安全策略
+  security:
+    # 文件系统
+    deny_paths:
+      - /etc/shadow
+      - /etc/passwd
+      - /root
+      - /home
+    allow_tmp: true
+
+    # 网络
+    deny_all_network: true
+    allowed_hosts: []
+    allowed_ports: []

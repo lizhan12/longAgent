@@ -1,0 +1,35 @@
+# MCP Server 配置
+
+mcp:
+  # MCP Server 连接配置
+  servers:
+    - name: filesystem
+      command: python
+      args: ["mcp_servers/filesystem_server.py"]
+      env: {}
+      transport: stdio
+    - name: calculator
+      command: python
+      args: ["mcp_servers/calculator_server.py"]
+      env: {}
+      transport: stdio
+
+  # 默认配置
+  defaults:
+    transport: stdio
+    timeout: 30.0
+
+  # 系统内置 MCP Server
+  system_server:
+    enabled: true
+    tools:
+      - system_info
+      - query_memory
+      - get_trace
+      - submit_task
+    resources:
+      - long://system/status
+      - long://system/config
+    prompts:
+      - plan_task
+      - analyze_error

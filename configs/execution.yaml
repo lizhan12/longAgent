@@ -1,0 +1,41 @@
+execution:
+  mode: balanced    # controlled | balanced | exploratory
+
+  controlled:
+    max_search_rounds: 2
+    strict_react: true
+    allow_self_correction: false
+    confidence_threshold: 0.9
+    allow_strategy_change: false
+    max_rounds: 8
+
+  balanced:
+    max_search_rounds: 4
+    strict_react: false
+    allow_self_correction: true
+    confidence_threshold: 0.7
+    allow_strategy_change: true
+    max_rounds: 10
+
+  exploratory:
+    max_search_rounds: 6
+    strict_react: false
+    allow_self_correction: true
+    confidence_threshold: 0.5
+    allow_strategy_change: true
+    max_rounds: 12
+
+  fallback_loop:
+    max_tool_rounds: 8
+    max_search_rounds: 2
+    round_timeout: 150.0
+    max_tool_result_len: 1500
+
+  cognitive_runtime:
+    max_rounds: 8
+    max_search_count: 3
+    max_retries: 3
+
+  plan_execution:
+    generation_timeout: 90
+    max_generation_retries: 2

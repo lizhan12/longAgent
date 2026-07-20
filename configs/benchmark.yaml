@@ -1,0 +1,36 @@
+tasks:
+  simple:
+    - query: "今天杭州天气怎么样"
+      expect: contains_weather_info
+    - query: "解释什么是 Docker"
+      expect: contains_explanation
+    - query: "帮我读一下 README.md"
+      expect: contains_file_content
+    - query: "现在几点了"
+      expect: contains_time
+    - query: "1+1等于几"
+      expect: contains_number
+
+  moderate:
+    - query: "搜索 Python 3.13 新特性，总结要点"
+      expect: contains_summary
+    - query: "帮我写一个 FastAPI 的 CRUD 接口"
+      expect: contains_code
+    - query: "查找 LangChain 最新版本的变化"
+      expect: contains_changelog
+    - query: "对比 React 和 Vue 的优缺点"
+      expect: contains_comparison
+    - query: "写一个 Python 快速排序算法"
+      expect: contains_code
+
+  complex:
+    - query: "分析十五五规划相关政策，生成趋势折线图"
+      expect: contains_chart_or_analysis
+    - query: "调研 vLLM 和 TGI 的性能对比，生成对比表格"
+      expect: contains_comparison_table
+    - query: "搜索最近的 AI Agent 框架，分析架构差异，生成对比报告"
+      expect: contains_analysis_report
+    - query: "帮我设计一个微服务架构方案，包含服务拆分和通信方式"
+      expect: contains_architecture_design
+    - query: "分析 2024 年大模型发展趋势，生成数据图表"
+      expect: contains_chart_and_analysis

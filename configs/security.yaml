@@ -1,0 +1,32 @@
+# 安全与部署配置
+# Harness Engineering: 安全边界由配置决定
+
+security:
+  # 安全模式: development | service
+  #   development: 全功能（execute_code, delete_file 等全部可用）
+  #   service: 服务模式（禁用 Shell 执行和文件删除，仅暴露业务工具）
+  mode: development
+
+  # 服务模式下禁止的工具列表
+  service_denied_tools:
+    - execute_code
+    - execute_file
+    - delete_file
+
+  # 沙箱会话模式
+  #   ephemeral: 每次执行后销毁（默认）
+  #   session: 会话级复用（同一对话中沙箱保持状态）
+  sandbox_lifecycle: session
+
+  # 对话压缩配置
+  compression:
+    enabled: true
+    max_prompt_chars: 12000
+    min_rounds_before_compress: 3
+    keep_recent_rounds: 2
+
+  # 子 Agent 配置
+  subagent:
+    enabled: true
+    max_concurrent: 5
+    specs_dir: subagents

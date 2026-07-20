@@ -1,0 +1,67 @@
+# Optimization 优化配置
+
+optimization:
+  # OODA 循环
+  cycle:
+    auto_run: false
+    min_interval_seconds: 3600  # 最小循环间隔 1 小时
+
+  # 指标收集
+  collector:
+    retention_days: 90
+    aggregation_interval: 300  # 聚合间隔 5 分钟
+
+  # 模式分析
+  analyzer:
+    thresholds:
+      low_success_rate: 0.5
+      high_avg_steps: 8.0
+      high_duration: 60.0
+      low_eval_score: 0.6
+    min_samples: 5  # 最小样本数
+
+  # 审批矩阵
+  approval:
+    # 变更频率限制
+    change_frequency_limit: 3600  # 1 小时
+    # 安全阈值目标（永不被建议变更）
+    safety_targets:
+      - state_machine
+      - ltl_rules
+      - security_policy
+    # 自动批准
+    auto_approve_low_risk: false
+    rules:
+      - risk_level: low
+        requires_approval: true
+        max_auto_confidence: 0.9
+      - risk_level: medium
+        requires_approval: true
+        max_auto_confidence: 0.0
+      - risk_level: high
+        requires_approval: true
+        max_auto_confidence: 0.0
+      - risk_level: critical
+        requires_approval: true
+        max_auto_confidence: 0.0
+
+  # 变更应用
+  applier:
+    regression_threshold: 0.1  # 10% 回归阈值
+    auto_rollback: true
+
+  # 优化目标
+  targets:
+    prompt:
+      min_version_samples: 5
+      low_score_threshold: 0.6
+    routing:
+      min_route_samples: 5
+      low_success_threshold: 0.5
+    budget:
+      high_utilization: 0.9
+      low_utilization: 0.3
+    tool:
+      min_tool_samples: 5
+      low_success_threshold: 0.5
+      high_duration: 10.0

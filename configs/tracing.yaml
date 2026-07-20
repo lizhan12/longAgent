@@ -1,0 +1,8 @@
+# 分布式追踪配置
+# 支持三种 provider: "null" | "console" | "otel"
+tracing:
+  provider: console
+
+  otel:
+    endpoint: "http://localhost:4318/v1/traces"
+    service_name: "long-agent"

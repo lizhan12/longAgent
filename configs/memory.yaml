@@ -1,0 +1,41 @@
+# Memory 配置 - 三栖记忆架构
+
+# 短期对话窗口（合并原 ShortTerm + Working）
+windowed:
+  max_messages: 128
+  max_task_items: 50
+  max_tokens: 8000           # token 预算上限，超出时自动压缩中间消息
+  auto_compress: true         # 是否启用自动压缩
+
+# 长期向量检索桶（合并原 Semantic + Episodic + Procedural）
+vector_rag:
+  backend: chromadb
+  collections: [semantic, episodic, procedural]
+  top_k: 5
+
+# 语义压缩
+compressor:
+  max_tokens: 4000
+
+# 对话摘要
+conversation:
+  summarize_threshold: 20     # 触发自动摘要的消息数阈值
+  max_persisted_history: 500
+  auto_summarize: true        # 是否启用自动摘要
+
+# 记忆文件系统（时间序列结构）
+memory_files:
+  daily_dir: memory/          # 每日记忆日志目录
+  retain_days: 7              # 保留详细记录的天数
+
+# 衰减配置
+decay:
+  short_term_lambda: 0.1
+  long_term_lambda: 0.005
+  min_strength: 0.05
+  cleanup_interval: 300       # 清理间隔（秒）
+  auto_cleanup: true          # 是否自动清理低强度记忆
+
+# 检索策略
+retrieval:
+  default_strategy: hybrid
