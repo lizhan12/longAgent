@@ -257,6 +257,7 @@ class CognitiveContext:
     # 重复工具调用检测
     consecutive_duplicate_calls: int = 0
     last_tool_call_key: str = ""
+    consecutive_empty_responses: int = 0  # LLM 连续返回空响应的次数
 
     messages: list[dict[str, Any]] = field(default_factory=list)
 
@@ -818,6 +819,7 @@ class CognitiveRuntime:
             return {"_error": f"LLM 调用失败: {e}"}
 
         if response.tool_calls:
+            context.consecutive_empty_responses = 0
             if context.task_ir:
                 for tc in response.tool_calls:
                     for subtask in context.task_ir.subtasks:
@@ -833,6 +835,7 @@ class CognitiveRuntime:
             return {"has_tool_calls": True, "has_final_text": False, "_retry_think": False}
 
         if response.content:
+            context.consecutive_empty_responses = 0
             extracted_code = self._extract_code_from_response(response.content)
             if extracted_code and len(extracted_code) > 50:
                 needs_code_exec = any(
@@ -1128,8 +1131,26 @@ class CognitiveRuntime:
                 "_final_text": response.content,
             }
 
-        # LLM 返回空响应（无 tool_calls 也无 content），触发重试
-        logger.warning("THINK: LLM 返回空响应（无工具调用也无文本），强制重试")
+        # LLM 返回空响应（无 tool_calls 也无 content）
+        context.consecutive_empty_responses += 1
+        logger.warning(
+            "THINK: LLM 返回空响应（第%d次），%s",
+            context.consecutive_empty_responses,
+            "强制生成回复" if context.consecutive_empty_responses >= 2 else "重试",
+        )
+
+        if context.consecutive_empty_responses >= 2:
+            # 连续 2 次空响应，使用已有工具结果生成回复
+            fallback = self._build_fallback_output(context)
+            return {
+                "has_final_text": True,
+                "has_tool_calls": False,
+                "_retry_think": False,
+                "_final_text": fallback,
+                "final_output": fallback,
+                "is_complete": True,
+            }
+
         context.messages.append({"role": "assistant", "content": ""})
         context.messages.append({
             "role": "user",
@@ -1140,6 +1161,17 @@ class CognitiveRuntime:
             ),
         })
         return {"has_tool_calls": False, "has_final_text": False, "_retry_think": True}
+
+    def _build_fallback_output(self, context: CognitiveContext) -> str:
+        """当 LLM 连续返回空响应时，用已有工具结果生成降级回复"""
+        lines = ["以下是根据已获取的信息生成的回复：\n"]
+        for t in context.tool_history:
+            if "error" not in t and t.get("result"):
+                name = t.get("name", "unknown")
+                result = t.get("result", "")
+                lines.append(f"【{name}】\n{result}\n")
+        lines.append("\n---\n由于 LLM 持续返回空响应，以上为基于工具结果自动生成的摘要。")
+        return "\n".join(lines)
 
     def _build_search_exhaustion_hint(self, context: CognitiveContext) -> str | None:
         has_code_tools = any(
