@@ -755,6 +755,28 @@ class CognitiveRuntime:
             await self._ensure_task_ir(context)
             await self._inject_memory_context(context)
 
+        # 第一轮且未调用任何工具 → 在用户消息前注入强工具调用指令
+        if context.round_count <= 2 and not context.tool_history:
+            _TOOL_REQUIRED_KEYWORDS = (
+                "天气", "气温", "温度", "下雨", "下雪", "weather",
+                "汇率", "股价", "股票", "基金", "比特币",
+                "新闻", "热点", "赛事", "比分",
+            )
+            if any(kw in context.user_message for kw in _TOOL_REQUIRED_KEYWORDS):
+                # 查找最后一条用户消息，注入工具调用指令
+                for i in range(len(context.messages) - 1, -1, -1):
+                    if context.messages[i].get("role") == "user":
+                        hint = (
+                            "\n\n[系统提示] 检测到你需要查询实时数据。请直接调用对应的工具获取数据，"
+                            "不要只回复文字。工具列表中有可用的数据查询工具，立即调用它。"
+                        )
+                        if "天气" in context.user_message:
+                            hint += (
+                                "\n天气查询专用工具: query_weather(city='城市名')"
+                            )
+                        context.messages[i]["content"] += hint
+                        break
+
         task_context_msg = self._build_task_context_message(context)
         if task_context_msg:
             has_system = any(m.get("role") == "system" for m in context.messages)
