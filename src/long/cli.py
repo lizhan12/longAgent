@@ -2825,13 +2825,7 @@ class LongSystem:
         """
         from long.llm.base import LLMMessage
 
-        plan_executed = await self._try_plan_execution(
-            cli_adapter, history_msgs, tools
-        )
-        if plan_executed:
-            return
-
-        # 尝试认知运行时模式
+        # 统一走认知运行时模式
         cognitive_ok = await self._cognitive_runtime_loop(
             cli_adapter, history_msgs, tools
         )
@@ -3069,6 +3063,7 @@ class LongSystem:
             memory_controller=self.memory,
             tool_capability_registry=tool_capability_registry,
             on_span_created=on_span_created_fn,
+            plan_executor=self.plan_executor,
         )
 
         context = CognitiveContext(
@@ -3723,16 +3718,8 @@ class LongSystem:
         history_msgs: list[dict[str, str]],
         tools: list[dict[str, Any]],
     ) -> bool:
-        """尝试计划生成与受控执行
-
-        执行流程：
-        1. 使用 TaskComplexityClassifier 分类任务复杂度（零延迟，纯规则）
-        2. 仅 COMPLEX 任务才调用 LLM 生成结构化计划
-        3. SIMPLE/MODERATE 任务直接走工具调用循环
-
-        Returns:
-            True 如果计划成功执行，False 如果需要降级
-        """
+        """尝试计划生成与受控执行（已废弃，不再使用）"""
+        return False
         if self.plan_executor is None:
             return False
 

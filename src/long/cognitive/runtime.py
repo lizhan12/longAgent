@@ -487,6 +487,7 @@ class CognitiveRuntime:
         tool_capability_registry: Any | None = None,
         planner_agent: Any | None = None,
         on_span_created: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        plan_executor: Any | None = None,
     ) -> None:
         self._llm_chat = llm_chat_fn
         self._llm_chat_with_tools = llm_chat_with_tools_fn
@@ -498,6 +499,7 @@ class CognitiveRuntime:
         self._tool_capability = tool_capability_registry
         self._planner_agent = planner_agent
         self._on_span_created = on_span_created
+        self._plan_executor = plan_executor
 
         self.reflector = Reflector(llm_chat_fn)
         self.tool_router = ToolRouter()
@@ -534,7 +536,8 @@ class CognitiveRuntime:
         graph.add_edge("observe", "reflect")
 
         graph.add_edge("reflect", "act", condition="needs_retry")
-        graph.add_edge("reflect", "plan")
+        graph.add_edge("reflect", "plan", condition="trigger_planir")
+        graph.add_edge("reflect", "think", condition="should_continue")
 
         graph.add_edge("plan", "think", condition="should_continue")
         graph.add_edge("plan", "output", condition="is_complete")
@@ -1504,8 +1507,26 @@ class CognitiveRuntime:
 
     async def _handle_reflect(self, ctx: dict[str, Any]) -> dict[str, Any]:
         context: CognitiveContext | None = ctx.get("_cognitive_context")
-        if not context or not context.tool_history:
-            return {"needs_retry": False}
+        if not context:
+            return {"needs_retry": False, "should_continue": False}
+
+        # 检测卡住条件：多轮不调工具 / 重复调用 / 轮次即将耗尽
+        has_tool_history = bool(context.tool_history)
+        stuck_no_tool = context.round_count >= 3 and not has_tool_history
+        stuck_duplicate = context.consecutive_duplicate_calls >= 3
+        stuck_near_limit = context.round_count >= context.max_rounds - 1
+
+        if (stuck_no_tool or stuck_duplicate or stuck_near_limit) and not has_tool_history:
+            logger.info(
+                "REFLECT 检测到卡住: round=%d, tool_history=%d, duplicate=%d",
+                context.round_count, len(context.tool_history),
+                context.consecutive_duplicate_calls,
+            )
+            context.needs_retry = False
+            return {"needs_retry": False, "should_continue": False, "trigger_planir": True}
+
+        if not has_tool_history:
+            return {"needs_retry": False, "should_continue": True}
 
         reflection = await self.reflector.reflect(context)
         context.reflections.append(reflection.get("reflection", ""))
@@ -1513,15 +1534,35 @@ class CognitiveRuntime:
         if reflection.get("needs_retry") and context.retry_count < context.max_retries:
             context.retry_count += 1
             context.needs_retry = True
-            return {"needs_retry": True}
+            return {"needs_retry": True, "should_continue": True}
 
         context.needs_retry = False
-        return {"needs_retry": False}
+        return {"needs_retry": False, "should_continue": True}
 
     async def _handle_plan(self, ctx: dict[str, Any]) -> dict[str, Any]:
         context: CognitiveContext | None = ctx.get("_cognitive_context")
         if not context:
             return {"should_continue": True}
+
+        # 卡住恢复：生成 PlanIR 引导 LLM 走出僵局
+        if ctx.get("trigger_planir") and self._plan_executor is not None:
+            logger.info("PLAN 卡住恢复: 生成 PlanIR")
+            try:
+                plan = await self._plan_executor.generate_plan(
+                    user_message=context.user_message,
+                    history_msgs=context.messages,
+                    available_tools=ctx.get("_tools", []),
+                )
+                if plan and len(plan.steps) > 1:
+                    logger.info("PLANIR 生成成功: %s, %d 步", plan.plan_id, len(plan.steps))
+                    context.final_output = (
+                        "[系统提示] 检测到执行卡住，已生成结构化计划 (%d 步)。"
+                        "请按照以下步骤执行：\n%s" % (len(plan.steps), plan.goal)
+                    )
+                    context.is_complete = True
+                    return {"is_complete": True, "should_continue": False}
+            except Exception as e:
+                logger.warning("PLANIR 生成失败: %s", e)
 
         plan_result = self.planner.plan(context)
         context.plan_result = plan_result

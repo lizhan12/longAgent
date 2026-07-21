@@ -2,12 +2,6 @@
 
 将形式化框架（PlanIR / StateMachine / ConstraintValidator / LTL）
 与实际工具执行桥接，实现受控的自主任务分解与执行。
-
-架构：
-  Phase 0: 任务分类 — 规则引擎判断复杂度，决定执行策略
-  Phase 1: 计划生成 — LLM 生成结构化 PlanIR（仅复杂任务）
-  Phase 2a: 受控执行 — 约束验证 + 状态机 + HITL + 回退
-  Phase 2b: 降级执行 — 原始工具调用循环（带运行时约束检查）
 """
 
 from __future__ import annotations
@@ -31,221 +25,9 @@ from ..observability.tracing import current_trace, SpanStatus
 logger = logging.getLogger(__name__)
 
 
-class TaskComplexity(str, Enum):
-    """任务复杂度等级"""
-
-    SIMPLE = "simple"
-    MODERATE = "moderate"
-    COMPLEX = "complex"
-
-
-@dataclass
-class ComplexityScore:
-    """复杂度评分结果"""
-
-    level: TaskComplexity
-    score: float
-    reasons: list[str] = field(default_factory=list)
-    needs_planning: bool = False
-
-
-class TaskComplexityClassifier:
-    """任务复杂度分类器
-
-    基于多维特征判断用户请求的复杂度，决定是否需要生成结构化计划。
-
-    分类策略：
-    - SIMPLE: 单步操作，直接工具调用即可（如"读取文件"、"当前时间"）
-    - MODERATE: 2-3步操作，工具调用循环可处理（如"读取文件并总结"）
-    - COMPLEX: 多步/多依赖/高风险，需要结构化计划（如"创建项目并部署"）
-
-    评分维度：
-    1. 操作步骤数（隐式推断）
-    2. 工具依赖（是否需要多种工具协作）
-    3. 风险等级（是否涉及不可逆操作）
-    4. 条件/分支（是否需要条件判断）
-    5. 创造性/生成性（是否需要生成新内容）
-    """
-
-    SIMPLE_PATTERNS: list[re.Pattern[str]] = field(default_factory=list, init=False)
-    COMPLEX_PATTERNS: list[re.Pattern[str]] = field(default_factory=list, init=False)
-    MULTI_STEP_INDICATORS: list[re.Pattern[str]] = field(default_factory=list, init=False)
-    HIGH_RISK_INDICATORS: list[re.Pattern[str]] = field(default_factory=list, init=False)
-    CREATIVE_INDICATORS: list[re.Pattern[str]] = field(default_factory=list, init=False)
-
-    def __init__(self) -> None:
-        self.SIMPLE_PATTERNS = [
-            re.compile(r"^(什么是|什么是|解释|说明|介绍|tell me|explain|what is|define)", re.IGNORECASE),
-            re.compile(r"^(你好|hello|hi|hey|谢谢|thanks)", re.IGNORECASE),
-            re.compile(r"(读取|查看|显示|列出|read|show|list|display).{0,10}(文件|目录|内容|file|dir)", re.IGNORECASE),
-            re.compile(r"^(时间|日期|今天|time|date|today)", re.IGNORECASE),
-            re.compile(r"(状态|status|帮助|help|命令|command)", re.IGNORECASE),
-        ]
-
-        self.COMPLEX_PATTERNS = [
-            re.compile(r"(创建|开发|构建|实现|设计|create|build|develop|implement|design).{0,20}(项目|应用|系统|服务|project|app|system|service)", re.IGNORECASE),
-            re.compile(r"(部署|发布|上线|deploy|publish|release)", re.IGNORECASE),
-            re.compile(r"(迁移|转换|重构|migrate|convert|refactor)", re.IGNORECASE),
-            re.compile(r"(分析|评估|对比|analyze|evaluate|compare).{0,20}(然后|接着|之后|then|and then|after)", re.IGNORECASE),
-            re.compile(r"(完整|全部|整个|full|complete|entire).{0,20}(流程|方案|解决方案|workflow|solution|pipeline)", re.IGNORECASE),
-            re.compile(r"(绘制|画|生成|制作|plot|draw|chart|visualize|generate).{0,20}(图表|图形|折线图|柱状图|饼图|chart|graph|figure|diagram)", re.IGNORECASE),
-            re.compile(r"(折线图|柱状图|饼图|散点图|热力图|line chart|bar chart|pie chart|heatmap)", re.IGNORECASE),
-            re.compile(r"(详细|全面|深入|detailed|comprehensive|in-depth).{0,20}(报告|分析|研究|report|analysis|research)", re.IGNORECASE),
-            re.compile(r"(规划|计划|方案|plan|planning|strategy).{0,20}(图表|报告|分析|chart|report|analysis)", re.IGNORECASE),
-            # 生成文件类任务（PPT/Word/Excel等）需要多步骤：搜索→编写代码→执行→验证
-            re.compile(r"(生成|制作|创建|写|做|generate|create|make|write|produce).{0,20}(ppt|pptx|幻灯片|演示|presentation|slide)", re.IGNORECASE),
-            re.compile(r"(生成|制作|创建|写|做|generate|create|make|write|produce).{0,20}(word|docx|文档|document)", re.IGNORECASE),
-            re.compile(r"(生成|制作|创建|写|做|generate|create|make|write|produce).{0,20}(excel|xlsx|表格|spreadsheet)", re.IGNORECASE),
-            re.compile(r"(生成|制作|创建|写|做|generate|create|make|write|produce).{0,20}(pdf|PDF|便携文档)", re.IGNORECASE),
-            re.compile(r"(ppt|pptx|word|docx|excel|xlsx|pdf|PDF).{0,10}(报告|文档|文件|report|document|file)", re.IGNORECASE),
-        ]
-
-        self.MULTI_STEP_INDICATORS = [
-            re.compile(r"(然后|接着|之后|再|并且|同时|also|then|after|next|and then|after that)", re.IGNORECASE),
-            re.compile(r"(第一步|第二步|第三步|step 1|step 2|step 3|first|second|third)", re.IGNORECASE),
-            re.compile(r"(先|首先|firstly|first of all)", re.IGNORECASE),
-            re.compile(r"(分别|各自|separately|respectively)", re.IGNORECASE),
-            re.compile(r"(以及|还有|along with|as well as)", re.IGNORECASE),
-        ]
-
-        self.HIGH_RISK_INDICATORS = [
-            re.compile(r"(删除|移除|清除|delete|remove|clean|drop|truncate)", re.IGNORECASE),
-            re.compile(r"(执行|运行|跑|execute|run|launch).{0,10}(脚本|代码|命令|script|code|command)", re.IGNORECASE),
-            re.compile(r"(修改|更新|覆盖|modify|update|overwrite|replace).{0,10}(配置|数据库|config|database)", re.IGNORECASE),
-            re.compile(r"(写入|保存|覆盖|write|save|overwrite).{0,10}(文件|file)", re.IGNORECASE),
-        ]
-
-        self.CREATIVE_INDICATORS = [
-            re.compile(r"(写|生成|创建|编写|write|generate|create|compose).{0,15}(代码|脚本|程序|code|script|program)", re.IGNORECASE),
-            re.compile(r"(写|生成|创建|write|generate|create).{0,15}(文档|报告|文章|document|report|article)", re.IGNORECASE),
-            re.compile(r"(设计|制定|规划|design|plan|formulate).{0,15}(方案|架构|策略|solution|architecture|strategy)", re.IGNORECASE),
-            re.compile(r"(测试|验证|检查|test|verify|validate|check).{0,15}(然后|并|修复|then|and|fix)", re.IGNORECASE),
-            re.compile(r"(绘制|画|制作|plot|draw|chart|visualize).{0,15}(图表|图形|折线图|柱状图|饼图|chart|graph|figure)", re.IGNORECASE),
-            re.compile(r"(详细|全面|深入|detailed|comprehensive).{0,15}(报告|分析|研究|report|analysis)", re.IGNORECASE),
-            re.compile(r"(生成|制作|创建|写|generate|create|make|write).{0,15}(ppt|pptx|word|docx|excel|xlsx|pdf|PDF)", re.IGNORECASE),
-        ]
-
-    def classify(self, message: str, available_tools: list[dict[str, Any]] | None = None) -> ComplexityScore:
-        """分类任务复杂度
-
-        Args:
-            message: 用户消息
-            available_tools: 可用工具列表
-
-        Returns:
-            复杂度评分结果
-        """
-        score = 0.0
-        reasons: list[str] = []
-
-        for pattern in self.SIMPLE_PATTERNS:
-            if pattern.search(message):
-                score -= 2.0
-                reasons.append(f"匹配简单模式: {pattern.pattern[:30]}...")
-                break
-
-        for pattern in self.COMPLEX_PATTERNS:
-            if pattern.search(message):
-                score += 3.0
-                reasons.append(f"匹配复杂模式: {pattern.pattern[:30]}...")
-                break
-
-        # 文件生成任务（PPT/Word/Excel）天生需要多步骤，自动提升为 COMPLEX
-        _file_gen_re = re.compile(
-            r"(生成|制作|创建|写|做|generate|create|make|write|produce)"
-            r".{0,20}(ppt|pptx|word|docx|excel|xlsx|幻灯片|文档|表格|presentation|document|spreadsheet)",
-            re.IGNORECASE,
-        )
-        # 宽松匹配：含 ppt/pptx/word/excel 相关词但没有明确动词的消息
-        _file_keyword_re = re.compile(
-            r"(?:ppt版|pptx|\.pptx|\.docx|\.xlsx|幻灯片|word文档|excel表格|转成ppt|改成ppt"
-            r"|个ppt|个word|个excel|份ppt|成ppt|成word)",
-            re.IGNORECASE,
-        )
-        if (_file_gen_re.search(message) or _file_keyword_re.search(message)) and score < 4.0:
-            score = 4.0
-            reasons.append("文件生成任务，自动提升为复杂任务")
-
-        multi_step_count = sum(1 for p in self.MULTI_STEP_INDICATORS if p.search(message))
-        if multi_step_count >= 2:
-            score += 3.0
-            reasons.append(f"多步骤指示词 ({multi_step_count} 个)")
-        elif multi_step_count == 1:
-            score += 1.5
-            reasons.append("包含步骤连接词")
-
-        high_risk_count = sum(1 for p in self.HIGH_RISK_INDICATORS if p.search(message))
-        if high_risk_count >= 2:
-            score += 2.5
-            reasons.append(f"高风险操作 ({high_risk_count} 个)")
-        elif high_risk_count == 1:
-            score += 1.0
-            reasons.append("包含高风险操作")
-
-        creative_count = sum(1 for p in self.CREATIVE_INDICATORS if p.search(message))
-        if creative_count >= 2:
-            score += 2.0
-            reasons.append(f"创造性任务 ({creative_count} 个)")
-        elif creative_count == 1:
-            score += 1.0
-            reasons.append("包含生成性操作")
-
-        msg_len = len(message)
-        if msg_len > 200:
-            score += 1.5
-            reasons.append(f"长消息 ({msg_len} 字符)")
-        elif msg_len > 100:
-            score += 0.5
-            reasons.append("中等长度消息")
-
-        sentences = re.split(r'[。！？.!?\n]', message)
-        sentences = [s.strip() for s in sentences if s.strip()]
-        if len(sentences) >= 4:
-            score += 1.5
-            reasons.append(f"多句子 ({len(sentences)} 句)")
-        elif len(sentences) >= 2:
-            score += 0.5
-
-        question_count = message.count("?") + message.count("？")
-        if question_count >= 2:
-            score += 0.5
-            reasons.append(f"多问题 ({question_count} 个)")
-
-        tool_categories: set[str] = set()
-        if available_tools:
-            for tool in available_tools:
-                func = tool.get("function", {})
-                name = func.get("name", "")
-                if "file" in name or "read" in name or "list" in name:
-                    tool_categories.add("file_ops")
-                elif "execute" in name or "code" in name:
-                    tool_categories.add("code_exec")
-                elif "skill" in name:
-                    tool_categories.add("skill")
-                elif "mcp" in name:
-                    tool_categories.add("mcp")
-
-        if score >= 4.0:
-            level = TaskComplexity.COMPLEX
-        elif score >= 1.5:
-            level = TaskComplexity.MODERATE
-        else:
-            level = TaskComplexity.SIMPLE
-
-        needs_planning = level == TaskComplexity.COMPLEX
-
-        return ComplexityScore(
-            level=level,
-            score=score,
-            reasons=reasons,
-            needs_planning=needs_planning,
-        )
-
-
 @dataclass
 class StepResult:
     """步骤执行结果"""
-
     step_id: str
     success: bool
     output: str = ""
@@ -258,7 +40,6 @@ class StepResult:
 @dataclass
 class PlanExecutionResult:
     """计划执行结果"""
-
     plan_id: str
     success: bool
     final_state: AgentState = AgentState.INIT
@@ -268,123 +49,7 @@ class PlanExecutionResult:
     warnings: list[str] = field(default_factory=list)
     total_duration: float = 0.0
     used_fallback_mode: bool = False
-    has_placeholder_params: bool = False  # 标记计划因占位参数被拒绝
-
-
-PLAN_GENERATION_SYSTEM_PROMPT = """你是一个任务规划专家。你的职责是将用户的需求分解为结构化的执行计划。
-
-## 输出格式
-你必须输出一个 JSON 对象，严格遵循以下 schema：
-
-```json
-{
-  "plan_id": "plan_xxx",
-  "goal": "用户的目标描述",
-  "steps": [
-    {
-      "step_id": "step_1",
-      "action": "动作类型",
-      "args": { "参数": "值" },
-      "depends_on": [],
-      "condition": null,
-      "fallback_step": null,
-      "risk_level": "low",
-      "description": "步骤描述"
-    }
-  ],
-  "constraints": [],
-  "estimated_steps": 3
-}
-```
-
-## 可用动作类型（action）
-**action 字段只能从以下 9 个值中选择，不要使用工具名（如 read_skill_md）作为 action！**
-- `call_tool`: 调用本地工具（read_file, write_file, execute_code, execute_file, list_files, delete_file, read_skill_md, tavily_search 等），args: {"tool_name": "具体工具名", "parameters": {...}}
-- `call_mcp`: 调用 MCP 服务器工具，args: {"server_name": "服务器名", "tool_name": "工具名", "arguments": {...}}
-- `call_skill`: 调用 Skill 技能，args: {"skill_name": "技能名", "arguments": {...}}
-- `search`: 搜索文件（仅用于 list_files 读取文件目录），args: {"query": "路径"}
-- `reason`: 推理分析（不需要调用工具，纯思考步骤）
-- `summarize`: 总结归纳
-- `output`: 输出最终结果给用户
-- `wait_approval`: 等待用户审批（高风险操作时使用）
-- `call_api`: 调用外部 API（通常不使用）
-
-**重要：当你要调用 read_skill_md、read_file、execute_code 等具体工具时，action 必须是 "call_tool"，然后在 args.tool_name 中指定具体工具名！**
-
-## 风险等级（risk_level）
-- `low`: 普通操作（读取、查询）
-- `medium`: 中等风险（写入文件、执行代码）
-- `high`: 高风险（删除文件、执行不可逆操作）
-- `critical`: 极高风险（需要用户审批）
-
-## 规划原则
-1. 每个步骤应该是一个原子操作
-2. 复杂任务应分解为 3-8 个步骤
-3. 高风险操作前应有 `reason` 步骤进行验证
-4. 最后一步必须是 `output` 或 `summarize`
-5. `depends_on` 只能引用已定义的 step_id
-6. 如果任务很简单（1步就能完成），直接用 `output` 动作
-
-## 数据获取规则（极其重要！！！数据源选择错误将导致结果不准确）
-- **天气查询**：必须使用 `call_tool(query_weather)` 调用和风天气API，**绝对禁止使用 tavily_search 查询天气**，也**禁止自己写代码调 API**。
-  - 正确示例：step_1 用 `call_tool(query_weather, {"city": "杭州,阜阳,北京"})` 获取天气数据
-  - 错误示例1：step_1 用 tavily_search 搜索"阜阳天气预报" ← 数据不准确！
-  - 错误示例2：step_1 用 execute_code 自己写代码调 API ← 认证复杂容易出错！直接用 query_weather 工具即可
-  - query_weather 工具会返回格式化的简洁天气文本，包含实况和7天预报
-- **新闻、股价、赛事等实时信息**：使用 `call_tool(tavily_search)` 搜索
-- **天气数据必须来自 API**：生成的报告中的数据必须基于 API 返回的真实数据，绝不硬编码捏造温度值
-
-## write_file / execute_code 的 content 规则（极其重要！！！不遵守将导致任务失败）
-- `write_file` 的 `content` 参数**必须是完整可运行的真实代码**。绝不写"# 根据xxx编写代码"这类占位注释！
-- 错误示例（会导致任务失败）：content="# 根据搜索结果编写Python代码\\n# 生成数据可视化图表" ← 这是占位注释，不是代码！
-- 错误示例（会导致任务失败）：content="根据搜索内容生成PPT的Python脚本" ← 这是描述，不是代码！
-- 错误示例（会导致任务失败）：content="根据搜索结果和记忆内容，使用python-pptx编写完整的PPT生成代码" ← 这仍然是描述！
-- 正确示例：content="from pptx import Presentation\\nfrom pptx.util import Inches\\nprs = Presentation()\\nslide = prs.slides.add_slide(prs.slide_layouts[0])\\nslide.shapes.title.text = 'AI发展报告'\\nprs.save('output/ai_report.pptx')" ← 可执行代码
-- **content 的第一个字符必须是代码字符（如 from、import、def、class、# coding 等），绝不能是中文描述文字**
-- 任何 .py 文件内容如以 # 注释开头且不包含 import/def/class/= 等代码特征，将被系统检测并拒绝执行
-- 如果你不知道具体代码内容，请先搜索获取信息，不要写占位注释敷衍
-- `execute_code` 的 `code` 参数同理，必须包含完整可执行代码
-
-## 图表生成规则（极其重要）
-- **必须使用 matplotlib 生成图表并保存为 PNG 文件**
-- **禁止在代码中或输出中使用 Mermaid 语法**（如 xychart-beta、pie showData、flowchart 等）
-- **禁止输出 ASCII 文本图表**
-- 图表代码必须包含 `plt.savefig('output/xxx.png', dpi=150)` 保存图片
-- 中文字体配置：字体文件在 `font/simhei.ttf`，代码开头必须加载字体
-
-## 文件类型处理规则（极其重要）
-Skill 是"怎么做"的指引文档，不是"做什么"的指令。正确使用流程：
-1. **先获取内容**：通过搜索、推理等方式获取需要写入文件的实际内容数据
-2. **再读 Skill**：调用 `read_skill_md` 获取该文件类型的最佳实践和代码模板
-3. **按 Skill 指引执行**：根据 Skill 文档中的指引，结合已获取的内容，编写代码并执行
-
-示例流程（生成PPT报告 - 需要搜索内容时）：
-- step_1: call_tool(tavily_search) → 搜索报告所需的实际内容数据
-- step_2: call_tool(read_skill_md) → 学习如何用 python-pptx 创建PPT
-- step_3: call_tool(write_file) → 根据搜索结果 + Skill指引，编写完整的 python-pptx 代码（content 必须是真实可执行代码）
-- step_4: call_tool(execute_file) → 执行代码生成PPT文件
-- step_5: output → 输出结果
-
-示例流程（生成PPT报告 - 对话历史中已有内容时，如用户说"根据此生成ppt"）：
-- step_1: call_tool(read_skill_md) → 学习如何用 python-pptx 创建PPT
-- step_2: call_tool(write_file) → 直接根据对话历史中的内容 + Skill指引，编写完整的 python-pptx 代码（content 必须包含对话历史中的实际数据，不要写占位注释）
-- step_3: call_tool(execute_file) → 执行代码生成PPT文件
-- step_4: output → 输出结果
-
-注意：
-- 不要在获取内容之前就读 Skill，否则你不知道该往文件里填什么内容
-- 如果对话历史中已经包含了用户所需的内容数据，就不要再用 tavily_search 搜索，直接使用对话历史中的内容
-- 当用户说"根据此"、"根据上面的内容"、"基于这些"等指代词时，内容一定在对话历史中，不要搜索
-- 当用户说"生成ppt"、"生成pdf"、"写一份报告"等简短请求时，如果对话历史中有相关内容，应基于对话历史内容生成，不要搜索
-- **不要使用 reason 步骤来"整理"对话历史**，对话历史已经直接提供给你了，你应该在 write_file 的 content 中直接包含对话历史中的实际数据
-
-## 重要
-- 只输出 JSON，不要包含其他解释
-- 确保 JSON 语法正确
-- step_id 必须唯一
-- depends_on 中的 step_id 必须存在
-- 搜索关键词中的年份必须基于当前时间计算，不要使用过时的年份（如当前是2026年，"未来5年"应为2026-2031，不是2024-2029）
-"""
+    has_placeholder_params: bool = False
 
 
 class PlanExecutor:
@@ -394,9 +59,6 @@ class PlanExecutor:
     - 结构化计划生成
     - 编译时计划验证
     - 运行时约束检查（状态机 + LTL + 白名单）
-    - HITL 人工审批
-    - 步骤失败回退
-    - 降级执行模式
 
     Attributes:
         llm: LLM 客户端
@@ -428,7 +90,6 @@ class PlanExecutor:
         self.state_machine = state_machine or AgentStateMachine()
         self.max_plan_retries = max_plan_retries
         self.max_steps = max_steps
-        self.classifier = TaskComplexityClassifier()
         self.cascade_router = cascade_router
         self.hitl_handler = hitl_handler
 
