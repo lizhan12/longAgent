@@ -491,6 +491,15 @@ class IRParser:
                         except json.JSONDecodeError:
                             continue
 
+            # 深度未归零 → JSON 被截断，尝试修复
+            truncated = text[first_brace:]
+            try:
+                repaired = self._try_repair_truncated_json(truncated)
+                if repaired:
+                    return repaired
+            except Exception:
+                pass
+
         return None
 
     def _attempt_repairs(
