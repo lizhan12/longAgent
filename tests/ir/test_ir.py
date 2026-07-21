@@ -23,7 +23,8 @@ class TestActionType:
     def test_all_action_types(self):
         expected = [
             "search", "call_api", "call_tool", "call_mcp", "call_skill",
-            "reason", "summarize", "output", "wait_approval",
+            "read_file", "write_file", "execute_file",
+            "reason", "summarize", "output", "wait_approval", "skip",
         ]
         actual = [a.value for a in ActionType]
         assert sorted(actual) == sorted(expected)

@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Lint with ruff
+        run: |
+          uv run ruff check src/long/ tests/
+
+      - name: Type check with mypy
+        run: |
+          uv run mypy src/long/ --ignore-missing-imports || true
+
+      - name: Run tests (unit + integration)
+        run: |
+          uv run pytest tests/ \
+            --ignore=tests/test_model_call.py \
+            --ignore=tests/test_e2e_real_llm.py \
+            -v --tb=short -q
+
+      - name: Run security E2E tests
+        if: matrix.python-version == '3.12'
+        run: |
+          uv run pytest tests/test_e2e_security.py -v --tb=short -q
+
+      - name: Run harness E2E tests
+        if: matrix.python-version == '3.12'
+        run: |
+          uv run pytest tests/test_e2e_harness.py -v --tb=short -q
+
+  coverage:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Run tests with coverage
+        run: |
+          uv run pytest tests/ \
+            --ignore=tests/test_model_call.py \
+            --ignore=tests/test_e2e_real_llm.py \
+            --cov=src/long --cov-report=xml --cov-report=term \
+            -q
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v5
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false

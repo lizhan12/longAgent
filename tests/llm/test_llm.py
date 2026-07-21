@@ -27,7 +27,7 @@ class TestLLMConfig:
         assert config.default_params.model == "gpt-4o"
         assert config.default_params.temperature == 0.7
         assert config.retry.max_retries == 3
-        assert config.budget.max_tokens_per_task == 100000
+        assert config.budget.max_tokens_per_task == 200000
 
     def test_from_dict(self) -> None:
         data = {
@@ -195,9 +195,9 @@ class TestLLMClient:
     @pytest.mark.asyncio
     async def test_chat_no_api_key_raises(self) -> None:
         from long.errors import LLMError
-        config = LLMConfig(api_key="")
-        client = LLMClient(config)
         with patch.dict(os.environ, {}, clear=True):
+            config = LLMConfig(api_key="")
+            client = LLMClient(config)
             with pytest.raises(LLMError, match="未配置 API 密钥"):
                 await client.chat([LLMMessage(role="user", content="test")])
 
@@ -205,25 +205,58 @@ class TestLLMClient:
     async def test_chat_calls_sdk(self) -> None:
         client = LLMClient({"api_key": "sk-test", "model": "gpt-4o"})
 
-        mock_choice = MagicMock()
-        mock_choice.message.content = "Hello back!"
-        mock_choice.finish_reason = "stop"
+        # Mock the streaming response that _chat_impl iterates over
+        class MockChunk:
+            def __init__(self):
+                self.choices = []
+                self.usage = None
 
-        mock_usage = MagicMock()
-        mock_usage.prompt_tokens = 5
-        mock_usage.completion_tokens = 10
-        mock_usage.total_tokens = 15
+        class MockChunkChoice:
+            def __init__(self, delta=None, finish_reason=None):
+                self.delta = delta
+                self.finish_reason = finish_reason
 
-        mock_completion = MagicMock()
-        mock_completion.choices = [mock_choice]
-        mock_completion.usage = mock_usage
-        mock_completion.model = "gpt-4o"
+        class MockDelta:
+            def __init__(self, content=""):
+                self.content = content
 
-        client._client.chat.completions.create = AsyncMock(return_value=mock_completion)
+        # First chunk with content
+        chunk1 = MockChunk()
+        chunk1.choices = [MockChunkChoice(delta=MockDelta(content="Hello"))]
 
-        response = await client.chat([LLMMessage(role="user", content="Hello")])
-        assert response.content == "Hello back!"
-        assert response.usage.total_tokens == 15
+        # Second chunk with content
+        chunk2 = MockChunk()
+        chunk2.choices = [MockChunkChoice(delta=MockDelta(content=" back!"))]
+
+        # Final chunk with finish_reason and usage
+        chunk3 = MockChunk()
+        chunk3.choices = [MockChunkChoice(delta=MockDelta(), finish_reason="stop")]
+        chunk3.usage = MagicMock()
+        chunk3.usage.prompt_tokens = 5
+        chunk3.usage.completion_tokens = 10
+        chunk3.usage.total_tokens = 15
+
+        class MockAsyncIterable:
+            def __init__(self, chunks):
+                self._chunks = chunks
+                self._index = 0
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self._index >= len(self._chunks):
+                    raise StopAsyncIteration
+                chunk = self._chunks[self._index]
+                self._index += 1
+                return chunk
+
+        mock_stream = MockAsyncIterable([chunk1, chunk2, chunk3])
+        client._client.chat.completions.create = AsyncMock(return_value=mock_stream)
+
+        result = await client.chat([LLMMessage(role="user", content="Hello")])
+        assert result.content == "Hello back!"
+        assert result.usage.total_tokens == 15
         assert client.daily_tokens_used == 15
 
     def test_get_judge_fn(self) -> None:
@@ -250,13 +283,13 @@ class TestTimeoutConfig:
     def test_default_values(self) -> None:
         config = TimeoutConfig()
         assert config.connect == 15
-        assert config.read == 90
+        assert config.read == 180
         assert config.write == 30
 
 
 class TestBudgetConfig:
     def test_default_values(self) -> None:
         config = BudgetConfig()
-        assert config.max_tokens_per_task == 100000
+        assert config.max_tokens_per_task == 200000
         assert config.daily_token_limit == 1000000
         assert config.max_tokens_per_request == 16384

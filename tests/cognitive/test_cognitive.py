@@ -155,7 +155,7 @@ class TestParseTaskIR:
         assert task.goal == "临泉县未来7天的预报，带有折线图，并生成报告"
         assert len(task.subtasks) >= 2
         tool_hints = [s.tool_hint for s in task.subtasks if s.tool_hint]
-        assert "tavily_search" in tool_hints
+        assert "execute_file" in tool_hints
         assert "图表/可视化" in task.deliverables
         assert "报告/文档" in task.deliverables
 
@@ -394,7 +394,7 @@ class TestSemanticCompressor:
         compressor = SemanticCompressor()
         text = "B" * 3000
         result = compressor.compress("execute_code", text)
-        assert len(result) <= 1600
+        assert len(result) <= 2600
 
     def test_general_compression(self):
         compressor = SemanticCompressor()

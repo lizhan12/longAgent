@@ -259,7 +259,7 @@ class TestEndToEndFlow:
 
         next_sub = task.next_executable_subtask()
         assert next_sub is not None
-        assert next_sub.tool_hint == "tavily_search"
+        assert next_sub.tool_hint == "execute_file"
 
         task.mark_subtask_in_progress(next_sub.id)
         assert next_sub.status == "in_progress"

@@ -49,6 +49,7 @@ class TestInteractionEvent:
             "message", "error", "warning", "info", "progress",
             "stream_start", "stream_token", "stream_end",
             "hitl_request", "hitl_response", "system", "command",
+            "trace", "turn_complete",
         }
         actual_types = {t.value for t in InteractionEventType}
         assert actual_types == expected_types
