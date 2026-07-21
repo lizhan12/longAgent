@@ -2740,20 +2740,19 @@ class LongSystem:
     async def _chat_with_tools_loop(
         self, cli_adapter: Any, history_msgs: list[dict[str, str]], tools: list[dict[str, Any]]
     ) -> None:
-        """带工具调用的聊天循环 — 集成认知运行时
+        """带工具调用的聊天循环
 
         执行策略（优先级从高到低）：
-        1. 结构化计划模式（PlanIR）— 仅 COMPLEX 任务
-        2. 认知运行时模式（Cognitive Runtime）— 基于 State Graph
-        3. 降级模式（Fallback Loop）— 简单 while 循环
+        1. PlanIR 结构化计划 — 所有请求先生成计划，再逐步骤执行
+        2. 降级模式（Fallback Loop）— PlanIR 失败时兜底
         """
         from long.llm.base import LLMMessage
 
-        # 统一走认知运行时模式
-        cognitive_ok = await self._cognitive_runtime_loop(
+        # 优先使用 PlanIR 结构化计划
+        plan_ok = await self._try_plan_execution(
             cli_adapter, history_msgs, tools
         )
-        if cognitive_ok:
+        if plan_ok:
             return
 
         # 降级模式
@@ -3642,10 +3641,121 @@ class LongSystem:
         history_msgs: list[dict[str, str]],
         tools: list[dict[str, Any]],
     ) -> bool:
-        """尝试计划生成与受控执行（已废弃，不再使用）"""
-        return False
+        """PlanIR 结构化计划：所有请求先生成计划，再逐步骤执行
+
+        流程：
+        1. 调用 LLM 生成 PlanIR（结构化动作序列）
+        2. 编译时验证（状态机路径检查 + 类型检查 + 安全检查）
+        3. 逐步骤执行（每步前运行时验证，每步后状态更新）
+        4. 终态验证（LTL 规则检查）
+
+        Returns:
+            True 如果计划成功执行，False 如果降级
+        """
         if self.plan_executor is None:
             return False
+
+        user_msgs = [m for m in history_msgs if m.get("role") == "user"]
+        if not user_msgs:
+            return False
+
+        user_message = user_msgs[-1].get("content", "")
+
+        import time as _time
+        _plan_start = _time.monotonic()
+
+        # 1. 生成 PlanIR
+        with cli_adapter.console.status("[bold cyan]📋 正在生成执行计划...[/bold cyan]", spinner="dots"):
+            plan = None
+            for _attempt in range(2):
+                try:
+                    plan = await asyncio.wait_for(
+                        self.plan_executor.generate_plan(
+                            user_message=user_message,
+                            history_msgs=history_msgs,
+                            available_tools=tools,
+                        ),
+                        timeout=180,
+                    )
+                except asyncio.TimeoutError:
+                    self._record_llm_timeout()
+                    if _attempt < 1:
+                        cli_adapter.console.print("[dim]计划生成超时，重试...[/dim]")
+                    else:
+                        return False
+                except Exception:
+                    if _attempt < 1:
+                        cli_adapter.console.print("[dim]计划生成失败，重试...[/dim]")
+                    else:
+                        return False
+
+        if plan is None:
+            return False
+
+        _plan_elapsed = _time.monotonic() - _plan_start
+
+        # 2. 编译时验证
+        validation = self.plan_executor.constraint_validator.validate_plan(plan)
+        if not validation.valid:
+            logger.warning("PlanIR 编译时验证失败: %s", validation.errors)
+            return False
+
+        # 单步计划直接输出
+        if len(plan.steps) <= 1:
+            step = plan.steps[0]
+            content = step.args.get("content", "") or step.args.get("goal", plan.goal)
+            if content:
+                self.active_session.add_message("assistant", content)
+                cli_adapter.console.print(content)
+            return True
+
+        # 3. 执行 PlanIR
+        cli_adapter.console.print(
+            f"[bold blue]📋 执行计划: {plan.goal}[/bold blue] "
+            f"[dim]({len(plan.steps)} 步, 生成耗时 {_plan_elapsed:.1f}s)[/dim]"
+        )
+
+        async def tool_executor(tool_name: str, arguments: dict[str, Any]) -> str:
+            return await self._execute_tool(tool_name, arguments)
+
+        exec_result = await self.plan_executor.execute_plan(
+            plan=plan,
+            cli_adapter=cli_adapter,
+            tool_executor=tool_executor,
+            history_msgs=history_msgs,
+        )
+
+        # 4. 处理结果
+        if exec_result.success and exec_result.output_text:
+            self.active_session.add_message("assistant", exec_result.output_text)
+            cli_adapter.console.print()
+
+            if self.memory is not None:
+                try:
+                    await self.memory.store(
+                        f"assistant: {exec_result.output_text}",
+                        memory_type=MemoryType.EPISODIC,
+                        importance=0.5,
+                    )
+                except Exception:
+                    pass
+            self._save_session()
+            self._schedule_auto_eval()
+            return True
+
+        if exec_result.success and not exec_result.output_text:
+            self.active_session.add_message("assistant", "任务已完成。")
+            self._save_session()
+            self._schedule_auto_eval()
+            return True
+
+        if not exec_result.success:
+            if exec_result.errors:
+                for err in exec_result.errors:
+                    cli_adapter.console.print(f"[yellow]  ⚠ {err}[/yellow]")
+            return False
+
+        return True
 
         user_msgs = [m for m in history_msgs if m.get("role") == "user"]
         if not user_msgs:
