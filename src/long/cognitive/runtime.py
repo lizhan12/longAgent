@@ -1145,6 +1145,17 @@ class CognitiveRuntime:
             if context.task_ir:
                 context.task_ir.add_conclusion(response.content[:200])
 
+            # 多轮未调工具 → 标记卡住，让 reflect 节点处理
+            if context.round_count >= 3 and not context.tool_history:
+                context.needs_retry = False
+                return {
+                    "has_final_text": True,
+                    "has_tool_calls": False,
+                    "_retry_think": False,
+                    "_final_text": response.content,
+                    "is_complete": True,
+                }
+
             return {
                 "has_final_text": True,
                 "has_tool_calls": False,
@@ -1726,13 +1737,19 @@ class CognitiveRuntime:
         else:
             # 空文本且无工具历史，尝试重试而非直接放弃
             if context and context.round_count < context.max_rounds:
-                logger.info("OUTPUT: 最终文本为空且无工具历史，重定向到 THINK 重试")
-                context.messages.append({
-                    "role": "user",
-                    "content": "请重新尝试完成任务。如果需要查询信息，请调用工具。",
-                })
-                return {"has_tool_calls": False, "has_final_text": False, "_retry_think": True}
-            context.final_output = "任务未能完成。"
+                # 多轮无工具调用 → 卡住，不再重试
+                if context.round_count >= 3 and not context.tool_history:
+                    logger.info("OUTPUT: 检测到卡住（round=%d, 无工具调用），停止重试", context.round_count)
+                    context.final_output = "任务未能完成。系统检测到 LLM 无法调用工具，请重试或简化问题描述。"
+                else:
+                    logger.info("OUTPUT: 最终文本为空且无工具历史，重定向到 THINK 重试")
+                    context.messages.append({
+                        "role": "user",
+                        "content": "请重新尝试完成任务。如果需要查询信息，请调用工具。",
+                    })
+                    return {"has_tool_calls": False, "has_final_text": False, "_retry_think": True}
+            else:
+                context.final_output = "任务未能完成。"
 
         if context:
             context.is_complete = True
