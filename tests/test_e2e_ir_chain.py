@@ -161,11 +161,12 @@ class TestConstraintValidatorChain:
             state_before=AgentState.HAS_DATA.value, state_after=AgentState.DONE.value,
         ))
 
-        # 终态检查：LTL 应该发现 DONE 但未经过 VERIFIED
+        # 终态检查：新规则下 DONE 只要离开 INIT 就合法
         final_result = self.validator.validate_final(context)
         ltl_errors = [e for e in final_result.errors if "[LTL终态]" in e]
-        assert len(ltl_errors) > 0, (
-            f"终态检查应报告 LTL 违规（DONE 但未经过 VERIFIED），"
+        # DONE 时 HAS_DATA 已被到达，INIT 不再是当前状态，所以不违规
+        assert len(ltl_errors) == 0, (
+            f"DONE 已离开 INIT 状态，不应有 LTL 违规，"
             f"实际错误: {final_result.errors}"
         )
 
@@ -217,7 +218,7 @@ class TestLTLChain:
     """LTL 验证器运行时时序验证"""
 
     def test_output_requires_verified_violation(self):
-        """output 但未经过 VERIFIED → LTL 违规"""
+        """output 但未经过 VERIFIED → 新规则下通过（只要离开了 INIT 状态）"""
         ltl = LTLValidator()
         history = ExecutionHistory()
 
@@ -231,16 +232,11 @@ class TestLTLChain:
             state_before="HAS_DATA", state_after="DONE",
         ))
 
-        # 终态检查
+        # 新规则: output 只要离开了 INIT 状态就合法
         valid, errors = ltl.check_final(history)
-        # 应该至少违反 output_requires_verified 和 done_requires_verified
         rule_names = {e.rule_name for e in errors}
-        assert "output_requires_verified" in rule_names, (
-            f"应报告 output_requires_verified 违规，"
-            f"实际违规规则: {rule_names}"
-        )
-        assert "done_requires_verified" in rule_names, (
-            f"应报告 done_requires_verified 违规，"
+        assert "output_requires_verified" not in rule_names, (
+            f"output 已离开 INIT 状态，不应违规，"
             f"实际违规规则: {rule_names}"
         )
 

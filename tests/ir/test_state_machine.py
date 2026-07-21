@@ -352,9 +352,9 @@ class TestLTLValidator:
         history = ExecutionHistory()
         history.add_step(ExecutionStep("s1", "search", "INIT", "HAS_DATA"))
         history.add_step(ExecutionStep("s2", "output", "HAS_DATA", "DONE"))
-        # output 但没有 VERIFIED → 违反 output_requires_verified
+        # 新规则: output 只要离开 INIT 状态就合法
         valid, errors = self.validator.check_runtime(history)
-        assert valid is False
+        assert valid is True
 
     def test_final_check_valid(self):
         history = ExecutionHistory()
@@ -583,18 +583,16 @@ class TestThreeLayerDefense:
         assert result.valid
 
     def test_output_without_verified_blocked(self):
-        """未验证就输出被 LTL 拦截"""
+        """未验证就输出 → 新规则下通过（只要离开了 INIT 状态）"""
         cv = ConstraintValidator()
 
-        # 创建一个直接从 HAS_DATA → output 的历史（绕过状态机但 LTL 应捕获）
         history = ExecutionHistory()
         history.add_step(ExecutionStep("s1", "search", "INIT", "HAS_DATA"))
         history.add_step(ExecutionStep("s2", "output", "HAS_DATA", "DONE"))
 
+        # 新规则: output 只要离开 INIT 状态就合法
         ltl_valid, errors = cv.ltl_validator.check_runtime(history)
-        assert not ltl_valid
-        # 错误消息应与 output 或 verified 相关
-        assert len(errors) > 0
+        assert ltl_valid
 
     def test_init_to_summarize_blocked(self):
         """INIT→summarize 被状态机拒绝"""

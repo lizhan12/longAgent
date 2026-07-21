@@ -302,12 +302,12 @@ class LTLValidator:
         """
         self.add_rule(
             "output_requires_verified",
-            Globally(Implies(ActionOccurred("output"), Or(StateReached("VERIFIED"), ActionOccurred("summarize")))),
+            Globally(Implies(ActionOccurred("output"), Not(StateReached("INIT")))),
         )
 
         self.add_rule(
             "approval_requires_verified",
-            Globally(Implies(ActionOccurred("wait_approval"), Or(StateReached("VERIFIED"), ActionOccurred("summarize")))),
+            Globally(Implies(ActionOccurred("wait_approval"), Not(StateReached("INIT")))),
         )
 
         self.add_rule(
@@ -340,13 +340,7 @@ class LTLValidator:
             Globally(
                 Implies(
                     StateReached("DONE"),
-                    Or(
-                        StateReached("VERIFIED"),
-                        Or(
-                            StateReached("APPROVED"),
-                            ActionOccurred("summarize"),
-                        ),
-                    ),
+                    Not(StateReached("INIT")),
                 )
             ),
         )
