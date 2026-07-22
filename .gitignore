@@ -48,6 +48,12 @@ tests/generate_weather_report.py
 1.txt
 *.pdf
 
+# Sensitive key files
+*.pem
+
+# Runtime evaluation artifacts
+evals/
+
 
 # Generated test artifacts
 tests/*.docx
