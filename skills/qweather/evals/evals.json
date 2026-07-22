@@ -1,0 +1,23 @@
+{
+  "skill_name": "qweather",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "查询杭州的实时天气和未来7天天气预报，返回JSON格式",
+      "expected_output": "返回包含杭州实时天气和7天预报的JSON，字段包括city、adm1、now、daily",
+      "files": []
+    },
+    {
+      "id": 1,
+      "prompt": "北京今天天气怎么样？",
+      "expected_output": "查询北京今天天气，返回JSON，包含实时天气数据",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "上海未来一周天气",
+      "expected_output": "查询上海7天天气预报，返回JSON数组daily",
+      "files": []
+    }
+  ]
+}

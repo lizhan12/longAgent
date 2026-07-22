@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Long - 可控AI智能系统</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+</head>
+<body>
+    <div id="app">
+
+        <!-- Sidebar -->
+        <aside id="sidebar" class="sidebar">
+            <div class="sidebar-brand">
+                <div class="sidebar-logo">L</div>
+                <div class="sidebar-brand-text">
+                    <span class="sidebar-brand-name">Long</span>
+                    <span class="sidebar-brand-sub">可控AI智能系统</span>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="sidebar-label">会话</div>
+                <div id="session-info" class="sidebar-card session-card">
+                    <div class="session-dot"></div>
+                    <span>未创建会话</span>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="sidebar-label">快捷命令</div>
+                <div class="sidebar-cmds">
+                    <button class="sidebar-cmd-btn" onclick="sendCommand('/help')">/help</button>
+                    <button class="sidebar-cmd-btn" onclick="sendCommand('/status')">/status</button>
+                    <button class="sidebar-cmd-btn" onclick="sendCommand('/skill')">/skill</button>
+                    <button class="sidebar-cmd-btn" onclick="sendCommand('/mcp')">/mcp</button>
+                    <button class="sidebar-cmd-btn" onclick="sendCommand('/clear')">/clear</button>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="sidebar-label">系统状态</div>
+                <div id="system-status" class="sidebar-card">
+                    <div class="status-indicator"></div>
+                    <span>等待连接</span>
+                </div>
+            </div>
+
+            <div id="connection-status" class="sidebar-connection">
+                <span class="connection-dot"></span>
+                <span>未连接</span>
+            </div>
+        </aside>
+
+        <!-- Main Panel -->
+        <div class="main-panel">
+
+            <!-- Topbar -->
+            <header class="topbar">
+                <button class="topbar-btn" onclick="toggleSidebar()" title="切换侧边栏">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                        <line x1="3" y1="5" x2="17" y2="5"/><line x1="3" y1="10" x2="17" y2="10"/><line x1="3" y1="15" x2="17" y2="15"/>
+                    </svg>
+                </button>
+                <div class="topbar-title">
+                    <span class="topbar-title-accent">Long</span>
+                    <span class="topbar-title-sep">/</span>
+                    <span class="topbar-title-sub">对话</span>
+                </div>
+                <div class="topbar-actions">
+                    <button class="topbar-btn" onclick="toggleTracePanel()" title="追踪面板">
+                        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                            <polyline points="2,14 6,6 10,10 16,2"/>
+                        </svg>
+                    </button>
+                    <button class="topbar-btn" onclick="clearChat()" title="清空对话">
+                        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                            <path d="M3 5h12M7 5V3h4v2M5 5v10a1 1 0 001 1h6a1 1 0 001-1V5"/>
+                        </svg>
+                    </button>
+                </div>
+            </header>
+
+            <!-- Messages -->
+            <div id="messages" class="messages-container">
+                <div class="welcome-block">
+                    <div class="welcome-icon">L</div>
+                    <h2 class="welcome-title">欢迎使用 Long</h2>
+                    <p class="welcome-desc">可控AI智能系统，输入任务开始对话</p>
+                    <div class="welcome-hints">
+                        <button class="hint-chip" onclick="sendCommand('今天杭州天气怎么样')">查询天气</button>
+                        <button class="hint-chip" onclick="sendCommand('用Python实现归并排序')">编写代码</button>
+                        <button class="hint-chip" onclick="sendCommand('生成一份AI发展趋势PPT')">生成报告</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- HITL Panel -->
+            <div id="hitl-panel" class="hitl-panel hidden">
+                <div class="hitl-header">
+                    <div class="hitl-star">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1l2 4h4l-3 3 1 4-4-2-4 2 1-4-3-3h4z"/></svg>
+                    </div>
+                    <span id="hitl-title" class="hitl-title">审核请求</span>
+                    <span id="hitl-risk" class="hitl-risk-tag">medium</span>
+                </div>
+                <p id="hitl-description" class="hitl-desc"></p>
+                <div id="hitl-options" class="hitl-options"></div>
+            </div>
+
+            <!-- Trace Panel -->
+            <div id="trace-panel" class="trace-panel hidden">
+                <div class="trace-panel-header">
+                    <span class="trace-panel-title">全链路追踪</span>
+                    <button class="trace-panel-close" onclick="toggleTracePanel()">&times;</button>
+                </div>
+                <div id="trace-list" class="trace-list">
+                    <div class="trace-empty">暂无追踪数据</div>
+                </div>
+            </div>
+
+            <!-- Input Dock -->
+            <div class="input-dock">
+                <div id="input-wrapper" class="input-wrap">
+                    <input
+                        type="text"
+                        id="user-input"
+                        placeholder="输入任务或命令..."
+                        autocomplete="off"
+                        onkeydown="handleKeyDown(event)"
+                        class="input-field"
+                    />
+                    <button id="send-btn" onclick="sendMessage()" class="send-btn">
+                        <svg id="send-icon" width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="2" y1="9" x2="16" y2="9"/><polyline points="10,3 16,9 10,15"/>
+                        </svg>
+                        <svg id="spinner-icon" class="spinner-icon" hidden width="18" height="18" viewBox="0 0 24 24" fill="none">
+                            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity="0.25"/>
+                            <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="input-hint">Enter 发送 / Shift+Enter 换行</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

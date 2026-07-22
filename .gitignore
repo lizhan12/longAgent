@@ -48,12 +48,6 @@ tests/generate_weather_report.py
 1.txt
 *.pdf
 
-# Runtime directories
-evals/
-mcp_servers/
-scripts/
-skills/
-static/
 
 # Generated test artifacts
 tests/*.docx
