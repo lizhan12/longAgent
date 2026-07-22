@@ -3731,7 +3731,7 @@ class LongSystem:
         # 4. 处理结果
         if exec_result.success and exec_result.output_text:
             self.active_session.add_message("assistant", exec_result.output_text)
-            cli_adapter.console.print()
+            cli_adapter.console.print(exec_result.output_text)
 
             if self.memory is not None:
                 try:
