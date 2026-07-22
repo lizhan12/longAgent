@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import os
-import resource
+try:
+    import resource
+except ImportError:
+    resource = None  # Windows: resource module not available
 import signal
 import tempfile
 import uuid
@@ -293,7 +296,11 @@ class ProcessSandbox(Sandbox):
 
     @staticmethod
     def _make_preexec_fn(limits: ResourceLimits):
-        """创建 preexec_fn，在子进程中设置资源限制"""
+        """创建 preexec_fn，在子进程中设置资源限制
+        Windows 不支持 resource 模块和 preexec_fn，返回 None。
+        """
+        if resource is None:
+            return None
 
         def preexec():
             try:

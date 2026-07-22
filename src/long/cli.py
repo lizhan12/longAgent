@@ -145,6 +145,7 @@ class LongSystem:
 
         llm_config = self._configs.get("llm", {}).get("llm", self._configs.get("llm", {}))
         self.llm = LLMClient(llm_config)
+        logger.info("LLM client model: %s", self.llm.config.model)
 
         self.state_machine = AgentStateMachine()
         self.ltl_validator = LTLValidator()
@@ -1250,7 +1251,7 @@ class LongSystem:
             from long.sandbox.base import ExecutionSpec, ResourceLimits
 
             sandbox_env: dict[str, str] = {}
-            for key in ("TAVILY_API_KEY", "LLM_API_KEY", "LLM_BASE_URL", "QWEATHER_PRIVATE_KEY"):
+            for key in ("TAVILY_API_KEY", "LLM_API_KEY", "LLM_BASE_URL", "QWEATHER_PRIVATE_KEY", "QWEATHER_API_HOST", "KEY_ID"):
                 val = os.environ.get(key, "")
                 if val:
                     sandbox_env[key] = val
@@ -3703,11 +3704,13 @@ class LongSystem:
         # 单步计划直接输出
         if len(plan.steps) <= 1:
             step = plan.steps[0]
-            content = step.args.get("content", "") or step.args.get("goal", plan.goal)
+            content = step.args.get("content", "")
             if content:
                 self.active_session.add_message("assistant", content)
                 cli_adapter.console.print(content)
-            return True
+                return True
+            # 没有内容时降级到普通聊天模式，让 LLM 直接回复
+            return False
 
         # 3. 执行 PlanIR
         cli_adapter.console.print(
@@ -4885,8 +4888,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--config-dir",
-        default="configs",
-        help="配置文件目录 (默认: configs)",
+        default=None,
+        help="配置文件目录 (默认: CWD/configs，不存在则回退到包 configs/)",
     )
     parser.add_argument(
         "--host",
@@ -4908,6 +4911,11 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # 配置目录：优先使用显式指定的路径；否则回退到 CWD/configs；都不存在则用包内 configs/
+    _package_configs = Path(__file__).resolve().parent.parent.parent / "configs"
+    if args.config_dir is None:
+        args.config_dir = "configs" if Path("configs").exists() else str(_package_configs)
+
     log_level = getattr(logging, args.log_level)
 
     log_dir = Path(args.workspace) / "logs"
@@ -4922,7 +4930,11 @@ def main() -> None:
         redact=True,
     )
 
-    load_dotenv()
+    # 搜索 .env 文件：优先当前目录，再回退到包根目录
+    _env_path = Path(".env")
+    if not _env_path.exists():
+        _env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+    load_dotenv(env_path=str(_env_path) if _env_path.exists() else None)
 
     system = LongSystem(
         config_dir=args.config_dir,

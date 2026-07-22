@@ -133,7 +133,7 @@ class WebUIAdapter(InteractionProtocol):
             """SPA 入口"""
             index_file = self.static_dir / "index.html"
             if index_file.exists():
-                return HTMLResponse(index_file.read_text())
+                return HTMLResponse(index_file.read_text(encoding="utf-8"))
             return HTMLResponse("<h1>Long WebUI</h1><p>Static files not found</p>")
 
         @self.app.websocket("/ws/{session_id}")

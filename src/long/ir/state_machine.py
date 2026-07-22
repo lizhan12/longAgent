@@ -71,7 +71,7 @@ APPROVAL_ACTIONS = {"wait_approval"}
 
 _DATA_STATES = {AgentState.INIT, AgentState.HAS_DATA, AgentState.VERIFIED}
 _VERIFY_STATES = {AgentState.HAS_DATA, AgentState.VERIFIED, AgentState.GENERATED}
-_OUTPUT_STATES = {AgentState.HAS_DATA, AgentState.VERIFIED, AgentState.GENERATED, AgentState.APPROVED}
+_OUTPUT_STATES = {AgentState.INIT, AgentState.HAS_DATA, AgentState.VERIFIED, AgentState.GENERATED, AgentState.APPROVED}
 
 
 def _resolve_target_state(from_state: AgentState, action: str) -> AgentState | None:

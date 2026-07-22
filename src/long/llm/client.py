@@ -201,6 +201,7 @@ class LLMClient:
         """chat 的实际实现（流式）"""
         model_config = self._config.get_model_config(purpose)
         model = kwargs.pop("model", model_config.model)
+        logger.debug("_chat_impl: purpose=%s model=%s model_config.model=%s self._config.model=%s", purpose, model, model_config.model, self._config.model)
         temperature = kwargs.pop("temperature", model_config.temperature)
         max_tokens = kwargs.pop("max_tokens", model_config.max_tokens)
         top_p = kwargs.pop("top_p", model_config.top_p)
@@ -305,6 +306,9 @@ class LLMClient:
                     if delta is not None:
                         if delta.content:
                             content_parts.append(delta.content)
+                        elif getattr(delta, "reasoning", None):
+                            # 兼容 SenseNova 等 API：内容放在 reasoning 而非 content 字段
+                            content_parts.append(getattr(delta, "reasoning", ""))
                     if chunk.choices[0].finish_reason:
                         finish_reason = chunk.choices[0].finish_reason
         except asyncio.TimeoutError:
@@ -662,12 +666,15 @@ class LLMClient:
                 except StopAsyncIteration:
                     break
 
-                if chunk.choices and chunk.choices[0].delta.content:
-                    token = chunk.choices[0].delta.content
-                    collected_content.append(token)
-                    completion_tokens += 1
-                    first_token_received = True
-                    yield token
+                if chunk.choices:
+                    delta = chunk.choices[0].delta
+                    if delta is not None:
+                        token = delta.content or getattr(delta, "reasoning", "")
+                        if token:
+                            collected_content.append(token)
+                            completion_tokens += 1
+                            first_token_received = True
+                            yield token
         except asyncio.TimeoutError:
             if not first_token_received:
                 raise LLMTimeoutError(
