@@ -52,7 +52,7 @@ class LongSystem:
 
     def __init__(self, config_dir: str | Path = "configs", workspace_root: str | Path = "./workspace") -> None:
         self._config_dir = Path(config_dir)
-        self._workspace_root = Path(workspace_root)
+        self._default_ws_root = Path(workspace_root)
         self._configs: dict[str, Any] = {}
         self._initialized = False
         self._auto_eval_interval = 5
@@ -134,8 +134,13 @@ class LongSystem:
         self.load_configs()
 
         ws_config = self._configs.get("workspace", {})
-        root = ws_config.get("root", str(self._workspace_root))
-        self.workspace = WorkspaceManager(root=root)
+        root = ws_config.get("root", str(self._default_ws_root))
+        # 相对路径相对于项目根目录（config_dir 的父目录）解析，而不是 CWD，
+        # 保证无论在哪执行 workspace 都指向项目目录下的同一个位置
+        root_path = Path(root)
+        if not root_path.is_absolute():
+            root_path = self._config_dir.parent / root
+        self.workspace = WorkspaceManager(root=str(root_path))
 
         if ws_config.get("audit", {}).get("enabled", True):
             allowed_paths = [str(self.workspace.root)]
@@ -1092,7 +1097,42 @@ class LongSystem:
         ws = self.workspace
         fs = self._workspace_fs
 
+        def _resolve_skill_path(path: str) -> Path | None:
+            """把 skills/<name>/... 映射到该 skill 实际所在目录（只读）
+
+            workspace/skills 通常是空的，真正的 skill 文件由 skill_manager 按
+            skills.yaml 的 search_paths 从项目根目录加载。没有这层映射，
+            read_skill_md 返回的文档里引用的同级文件（如 pptxgenjs.md）就读不到。
+            """
+            norm = path.replace("\\", "/").strip("/")
+            if not norm.startswith("skills/"):
+                return None
+            parts = norm.split("/")
+            if len(parts) < 2 or self.skill_manager is None:
+                return None
+
+            record = self.skill_manager.get_skill(parts[1])
+            if record is None:
+                return None
+
+            base = Path(record.path).resolve()
+            target = (base.joinpath(*parts[2:])).resolve() if len(parts) > 2 else base
+            # 防止 ../ 逃逸出 skill 目录
+            if target != base and base not in target.parents:
+                return None
+            return target if target.exists() else None
+
         async def _list_files(path: str = "", **kwargs: Any) -> str:
+            try:
+                skill_dir = _resolve_skill_path(path)
+                if skill_dir is not None and skill_dir.is_dir():
+                    base = path.replace("\\", "/").rstrip("/")
+                    return "\n".join(
+                        f"{'[D]' if e.is_dir() else '[F]'} {base}/{e.name}"
+                        for e in sorted(skill_dir.iterdir())
+                    ) or f"(空目录: {path})"
+            except Exception:
+                pass
             try:
                 if fs is not None:
                     entries = await fs.list_dir(path)
@@ -1130,6 +1170,9 @@ class LongSystem:
 
         async def _read_file(path: str = "", **kwargs: Any) -> str:
             try:
+                skill_file = _resolve_skill_path(path)
+                if skill_file is not None and skill_file.is_file():
+                    return skill_file.read_text(encoding="utf-8", errors="replace")
                 resolved = _resolve_path(path)
                 if fs is not None:
                     try:
@@ -1179,7 +1222,8 @@ class LongSystem:
                     await fs.write(resolved, content)
                 else:
                     ws.write_file(resolved, content)
-                return f"写入成功: {resolved}"
+                full_path = (ws.root / resolved).resolve()
+                return f"写入成功: {full_path}"
             except Exception as e:
                 return f"write_file 错误: {e}"
 
@@ -1296,6 +1340,11 @@ class LongSystem:
                         filtered_stderr = "\n".join(filtered_lines).strip()
                         if filtered_stderr:
                             output_parts.append(f"警告:\n{filtered_stderr}")
+                    # 告知用户输出文件的实际位置
+                    ws_root = getattr(self.workspace, "root", None)
+                    if ws_root is not None:
+                        output_dir = _os.path.join(str(ws_root), "output")
+                        output_parts.append(f"📁 文件保存目录: {output_dir}")
                     output_parts.append(f"执行成功 (耗时: {result.duration:.2f}s)")
                     return "\n".join(output_parts) if output_parts else "执行成功（无输出）"
 
@@ -1370,6 +1419,10 @@ class LongSystem:
                 return f"Tavily 搜索脚本未找到"
 
             env = dict(os.environ)
+            # Windows 下子进程 stdout 默认 GBK，搜索结果含 © / emoji 时会
+            # UnicodeEncodeError 退出（exit=1）。强制子进程全程使用 UTF-8。
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["PYTHONUTF8"] = "1"
             tavily_key = os.environ.get("TAVILY_API_KEY", "")
             if not tavily_key:
                 return "TAVILY_API_KEY 未配置"
@@ -1401,8 +1454,11 @@ class LongSystem:
                         timeout=20,
                     )
                     if proc.returncode != 0:
-                        return f"搜索执行失败 (exit={proc.returncode}): {stderr.decode().strip()}"
-                    return stdout.decode().strip() or "搜索完成，但无结果返回"
+                        return (
+                            f"搜索执行失败 (exit={proc.returncode}): "
+                            f"{stderr.decode('utf-8', errors='replace').strip()}"
+                        )
+                    return stdout.decode("utf-8", errors="replace").strip() or "搜索完成，但无结果返回"
                 except asyncio.TimeoutError:
                     try:
                         proc.kill()
@@ -1970,7 +2026,7 @@ class LongSystem:
         parts += [
             "- 纯文本文件（.txt/.md/.py/.json 等）→ `read_file` 读取",
             "- 代码文件保存到 `output/` 目录，路径用相对路径",
-            "- matplotlib 中文字体: `plt.rcParams['font.sans-serif'] = ['Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'DejaVu Sans']`",
+            "- matplotlib 中文字体已由沙箱预置，直接写中文标题/标签即可，不要自行配置字体",
             "",
             "## 工作流示例",
             "需要搜索信息并生成报告时：",
@@ -2778,265 +2834,21 @@ class LongSystem:
                 result.append(m)
         return result
 
-    async def _cognitive_runtime_loop(
-        self, cli_adapter: Any, history_msgs: list[dict[str, str]], tools: list[dict[str, Any]]
-    ) -> bool:
-        """认知运行时模式 — 基于 State Graph 的执行循环
+    def _workspace_root(self) -> str:
+        """获取 workspace 根目录，未初始化时返回空串（调用方按相对路径处理）"""
+        workspace = getattr(self, "workspace", None)
+        if workspace is None:
+            return ""
+        return getattr(workspace, "root", "") or ""
 
-        替代 while True 循环，支持：
-        - THINK → ACT → OBSERVE → REFLECT → PLAN → OUTPUT
-        - 分支、回滚、条件跳转
-        - 反思和自修正
-        - Checkpoint/Resume
+    def _resolve_ws_path(self, path: str) -> str:
+        """将计划中的相对路径解析为 workspace 下的绝对路径"""
+        import os as _os
 
-        Returns:
-            True 如果成功完成，False 如果需要降级
-        """
-        try:
-            from long.cognitive.runtime import (
-                CognitiveRuntime, CognitiveContext,
-            )
-        except ImportError:
-            logger.warning("Cognitive Runtime 不可用，降级到 Fallback 模式")
-            return False
-
-        import time as _time
-        _last_displayed_round = 0
-
-        def _maybe_show_round():
-            nonlocal _last_displayed_round
-            r = context.round_count
-            if r > _last_displayed_round:
-                _last_displayed_round = r
-                cli_adapter.console.print()
-                cli_adapter.console.print(
-                    f"━━━ [bold blue]Round {r}[/bold blue] [dim](最多{context.max_rounds}轮, 搜索:{context.search_count})[/dim] ━━━"
-                )
-
-        async def llm_chat_fn(messages, purpose="chat"):
-            _maybe_show_round()
-            cli_adapter.console.print("[dim]  🤔 LLM 思考中...[/dim]", end="\r")
-            _think_start = _time.monotonic()
-            llm_msgs = self._to_llm_messages(messages)
-            response = await self.llm.chat(llm_msgs, purpose=purpose)
-            self._record_llm_stats(response)
-            _think_elapsed = _time.monotonic() - _think_start
-            cli_adapter.console.print(f"[dim]  🤔 LLM 思考完成 ({_think_elapsed:.1f}s)[/dim]")
-            return response
-
-        async def llm_chat_with_tools_fn(messages, tools_list, purpose="chat", **kwargs):
-            _maybe_show_round()
-            cli_adapter.console.print("[dim]  🤔 LLM 思考中...[/dim]", end="\r")
-            _think_start = _time.monotonic()
-            llm_msgs = self._to_llm_messages(messages)
-            response = await self.llm.chat_with_tools(llm_msgs, tools_list, purpose=purpose, **kwargs)
-            self._record_llm_stats(response)
-            _think_elapsed = _time.monotonic() - _think_start
-            cli_adapter.console.print(f"[dim]  🤔 LLM 思考完成 ({_think_elapsed:.1f}s)[/dim]")
-            return response
-
-        async def tool_execute_fn(tool_name, arguments):
-            import json as _json
-            from long.cognitive.compression import SemanticCompressor as _SC
-            _tool_compressor = _SC()
-            display_args = {}
-            for k, v in (arguments or {}).items():
-                if isinstance(v, str) and len(v) > 60:
-                    display_args[k] = v[:60] + "..."
-                else:
-                    display_args[k] = v
-            param_str = ", ".join(f"{k}={v!r}" for k, v in display_args.items())
-            cli_adapter.console.print(
-                f"[bold yellow]🔧[/bold yellow] [bold cyan]{tool_name}({param_str})[/bold cyan]"
-            )
-            exec_start = _time.monotonic()
-            result = await self._execute_tool(tool_name, arguments)
-            exec_elapsed = _time.monotonic() - exec_start
-
-            # 压缩结果（用于传给 LLM 和显示）
-            original_len = len(result)
-            compressed_result = _tool_compressor.compress(tool_name, result)
-
-            # 天气查询调试日志（可按需开启为 DEBUG）
-            if tool_name == "execute_file" and ("天气" in str(arguments) or "qweather" in str(arguments)):
-                _cities_found = [c for c in ("北京", "上海", "阜阳", "杭州", "广州", "深圳", "成都", "武汉", "南京", "重庆") if c in result]
-                _cities_after = [c for c in ("北京", "上海", "阜阳", "杭州", "广州", "深圳", "成都", "武汉", "南京", "重庆") if c in compressed_result]
-                logger.debug(
-                    "天气查询压缩: original=%d→compressed=%d, cities_before=%s, cities_after=%s",
-                    original_len, len(compressed_result), _cities_found, _cities_after,
-                )
-
-            is_error = result.startswith((
-                "未知工具:", "工具执行失败:", "工具异常:", "MCP工具异常:",
-                "Skill 执行错误:", "Skill 工具", "沙箱未初始化",
-                "TAVILY_API_KEY 未配置", "搜索执行失败", "搜索超时",
-            )) or any(
-                result.startswith(f"{prefix} 错误:")
-                for prefix in ("list_files", "read_file", "write_file", "delete_file")
-            ) or any(
-                result.startswith(f"{prefix} 失败:")
-                for prefix in ("执行文件", "读取 SKILL.md")
-            )
-            if is_error:
-                cli_adapter.console.print(f"  [bold red]❌[/bold red] [dim]{result[:100]}[/dim] [dim]({exec_elapsed:.1f}s)[/dim]")
-            else:
-                # 对 execute_file/execute_code 的结果做简要预览
-                if tool_name in ("execute_file", "execute_code") and len(compressed_result) > 300:
-                    key_lines = []
-                    for line in compressed_result.split("\n"):
-                        stripped = line.strip()
-                        if stripped.startswith(("【", "实况", "预报", "⚠", "输出:", "执行成功")):
-                            key_lines.append(stripped)
-                    if key_lines:
-                        preview = " | ".join(key_lines[:3])
-                        if len(preview) > 80:
-                            preview = preview[:77] + "..."
-                    else:
-                        preview = compressed_result[:80].replace("\n", " ")
-                    len_info = f" ({len(compressed_result)} 字符" + (f", 原始{original_len}" if original_len != len(compressed_result) else "") + ")"
-                    cli_adapter.console.print(f"  [bold green]→[/bold green] [dim]{preview}...[/dim][dim]{len_info} ({exec_elapsed:.1f}s)[/dim]")
-                else:
-                    result_preview = compressed_result[:80].replace("\n", " ")
-                    len_info = f" ({len(compressed_result)} 字符)" if len(compressed_result) > 80 else ""
-                    cli_adapter.console.print(f"  [bold green]→[/bold green] [dim]{result_preview}{'...' if len(compressed_result) > 80 else ''}[/dim][dim]{len_info} ({exec_elapsed:.1f}s)[/dim]")
-            return compressed_result
-
-        def _strip_code_and_tool_calls(text: str) -> str:
-            """从 LLM 输出中剥离原始代码块和 tool_calls XML，避免显示到前端"""
-            result = text
-            # 剥离 <tool_calls>...</tool_calls>完整块
-            result = re.sub(r'<tool_calls>[\s\S]*?</tool_calls>', '', result, flags=re.IGNORECASE)
-            # 剥离残留的 <tool>...</tool> 标签
-            result = re.sub(r'<tool>[\s\S]*?</tool>', '', result, flags=re.IGNORECASE)
-            result = re.sub(r'<code>[\s\S]*?</code>', '', result, flags=re.IGNORECASE)
-            # 剥离大的 Python 代码块
-            result = re.sub(r'```python[\s\S]*?```', '', result)
-            result = re.sub(r'```[\s\S]*?```', '', result)
-            # 清理多余空行
-            result = re.sub(r'\n{3,}', '\n\n', result).strip()
-            return result
-
-        def _scan_output_files(output_dir: str) -> list[str]:
-            """扫描 output 目录，只返回当前会话生成后创建/修改的文件"""
-            if not os.path.isdir(output_dir):
-                return []
-            binary_exts = {'.pptx', '.pdf', '.docx', '.xlsx', '.xls', '.zip'}
-            files = []
-            session_start = self._session_start_ts
-            try:
-                for fname in sorted(os.listdir(output_dir)):
-                    ext = os.path.splitext(fname)[1].lower()
-                    if ext not in binary_exts:
-                        continue
-                    fpath = os.path.join(output_dir, fname)
-                    if not os.path.isfile(fpath) or os.path.getsize(fpath) <= 0:
-                        continue
-                    # 只返回当前会话开始后创建/修改的文件
-                    if session_start > 0:
-                        mtime = os.path.getmtime(fpath)
-                        if mtime < session_start - 5:  # 允许5秒容差
-                            continue
-                    files.append(fname)
-            except Exception:
-                pass
-            return files
-
-        async def output_fn(text):
-            if not text:
-                return
-            # 过滤掉原始代码和 tool_calls XML
-            cleaned = _strip_code_and_tool_calls(text)
-            if cleaned:
-                cli_adapter.console.print(cleaned)
-                if self.active_session is not None:
-                    self.active_session.add_message("assistant", cleaned)
-                    if self.memory is not None:
-                        try:
-                            await self.memory.add_message("assistant", cleaned)
-                        except Exception:
-                            pass
-                    self._save_session()
-
-        tool_capability_registry = None
-        try:
-            from long.capabilities.tool_capability import ToolCapabilityRegistry
-            tool_capability_registry = ToolCapabilityRegistry()
-        except ImportError:
-            pass
-
-        async def on_span_created_fn(span_data: dict[str, Any]) -> None:
-            """增量推送 trace span 到前端"""
-            from long.interaction.adapters.webui import WebUIAdapter
-            if not isinstance(cli_adapter, WebUIAdapter):
-                return
-            trace = self.tracer.get_traces(limit=1)
-            if not trace:
-                return
-            trace_data = trace[0].to_dict()
-            cli_adapter.send_event(InteractionEvent(
-                type=InteractionEventType.TRACE,
-                content="",
-                metadata={"trace": trace_data},
-            ))
-
-        runtime = CognitiveRuntime(
-            llm_chat_fn=llm_chat_fn,
-            llm_chat_with_tools_fn=llm_chat_with_tools_fn,
-            tool_execute_fn=tool_execute_fn,
-            output_fn=output_fn,
-            memory_controller=self.memory,
-            tool_capability_registry=tool_capability_registry,
-            on_span_created=on_span_created_fn,
-            plan_executor=self.plan_executor,
-        )
-
-        context = CognitiveContext(
-            user_message=history_msgs[-1].get("content", "") if history_msgs else "",
-            messages=list(history_msgs),
-            max_rounds=8,
-        )
-
-        # 检查对话历史中是否已有相关内容，如果有则添加提示
-        if len(history_msgs) > 3:
-            assistant_msgs = [m for m in history_msgs if m.get("role") == "assistant" and len(m.get("content", "")) > 100]
-            if assistant_msgs:
-                history_hint = (
-                    "\n\n## 重要提示\n对话历史中已经包含了用户之前讨论的内容。"
-                    "如果用户当前请求可以基于已有内容完成（如'根据此生成PPT'），"
-                    "请直接使用对话历史中的信息，不要再调用 tavily_search 搜索。"
-                )
-                # 追加到 system message
-                for i, msg in enumerate(context.messages):
-                    if msg.get("role") == "system":
-                        context.messages[i] = {
-                            "role": "system",
-                            "content": msg.get("content", "") + history_hint,
-                        }
-                        break
-
-        graph_context = {
-            "_cognitive_context": context,
-            "_tools": self._clean_tools_for_api(tools),
-        }
-
-        try:
-            result_context = await runtime.run(
-                context, extra={"_tools": self._clean_tools_for_api(tools)}
-            )
-            # 认知运行时完成后，扫描 output 目录是否有生成的二进制文件
-            output_dir = os.path.join(self.workspace.root, "output") if self.workspace else "output"
-            output_files = _scan_output_files(output_dir)
-            if output_files:
-                links = []
-                for fname in output_files:
-                    links.append(f"[{fname}](/output/{fname})")
-                file_section = "\n\n📁 生成的文件：\n" + "\n".join(f"  - {link}" for link in links)
-                cli_adapter.console.print(file_section)
-            
-            return result_context.is_complete
-        except Exception as e:
-            logger.warning("Cognitive Runtime 执行失败: %s，降级到 Fallback", e)
-            return False
+        if _os.path.isabs(path):
+            return path
+        root = self._workspace_root()
+        return _os.path.join(root, path) if root else path
 
     async def _print_generated_files(self, plan: Any, cli_adapter: Any) -> str | None:
         """读取计划执行生成的报告/图表文件内容并输出到前端
@@ -3048,7 +2860,8 @@ class LongSystem:
         """
         import os as _os
 
-        output_dir = _os.path.join(self.workspace.root, "output") if self.workspace else "output"
+        _ws_root = self._workspace_root()
+        output_dir = _os.path.join(_ws_root, "output") if _ws_root else "output"
         if not _os.path.isdir(output_dir):
             return None
 
@@ -3094,7 +2907,7 @@ class LongSystem:
             ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
             if ext != "md":
                 continue
-            full_path = _os.path.join(self.workspace.root, file_path) if self.workspace and not _os.path.isabs(file_path) else file_path
+            full_path = self._resolve_ws_path(file_path)
             if not _os.path.exists(full_path):
                 continue
             try:
@@ -3129,7 +2942,7 @@ class LongSystem:
         # 通过读取脚本内容推断输出文件名
         if (not pptx_files and not chart_files) and executed_scripts:
             for script_path in executed_scripts:
-                full_path = _os.path.join(self.workspace.root, script_path) if self.workspace and not _os.path.isabs(script_path) else script_path
+                full_path = self._resolve_ws_path(script_path)
                 if not _os.path.exists(full_path):
                     logger.debug("脚本文件不存在: %s", script_path)
                     continue
@@ -3174,7 +2987,7 @@ class LongSystem:
 
         # 如果推断失败（没有找到 PPTX/图表/报告），扫描 output 目录中当前会话的文件
         if not full_report:
-            session_start = self._session_start_ts
+            session_start = getattr(self, "_session_start_ts", 0)
             binary_exts = {'.pptx', '.pdf', '.docx', '.xlsx', '.xls', '.zip', '.png', '.jpg', '.jpeg', '.svg', '.gif'}
             try:
                 for fname in sorted(_os.listdir(output_dir)):
@@ -3189,20 +3002,27 @@ class LongSystem:
                         mtime = _os.path.getmtime(fpath)
                         if mtime < session_start - 5:
                             continue
-                    # 添加下载链接
+                    # 添加下载链接，同时显示实际路径
+                    label = ""
                     if ext == '.pptx':
-                        combined_report += f"\n\n📊 PPT已生成：[{fname}](/output/{fname})\n"
+                        label = "📊 PPT"
                     elif ext in ('.docx', '.pdf'):
-                        combined_report += f"\n\n📄 文档已生成：[{fname}](/output/{fname})\n"
+                        label = "📄 文档"
                     elif ext in ('.xlsx', '.xls'):
-                        combined_report += f"\n\n📊 表格已生成：[{fname}](/output/{fname})\n"
+                        label = "📊 表格"
                     elif ext in ('.png', '.jpg', '.jpeg', '.svg', '.gif'):
-                        combined_report += f"\n\n![{fname}](/output/{fname})\n"
+                        label = "🖼️ 图片"
                     else:
-                        combined_report += f"\n\n📦 文件已生成：[{fname}](/output/{fname})\n"
+                        label = "📦 文件"
+                    combined_report += f"\n\n{label} [{fname}]({fpath})\n"
                 full_report = combined_report if combined_report.strip() else None
             except Exception:
                 pass
+
+        # 在输出开头显示实际目录路径，帮助用户在 CLI 模式下找到文件
+        if full_report:
+            header = f"📁 输出目录: {output_dir}\n"
+            full_report = header + full_report
 
         logger.info("_print_generated_files: pptx_files=%s, chart_files=%s, report_parts=%d, full_report=%s",
                      pptx_files, chart_files, len(report_parts), "有内容" if full_report else "空")
@@ -3227,10 +3047,13 @@ class LongSystem:
         written_files = []
         has_report_step = False
         has_chart_step = False
+        # 在条件扫描块外初始化，避免未进入扫描分支时被引用导致 NameError
+        found_report = False
+        found_chart = False
 
         for step in plan.steps:
-            desc = (step.description or "").lower()
-            action = step.action.lower() if hasattr(step, 'action') else ""
+            desc = (getattr(step, "description", "") or "").lower()
+            action = (getattr(step, "action", "") or "").lower()
             args = step.args or {}
 
             if "报告" in desc or "report" in desc:
@@ -3270,13 +3093,13 @@ class LongSystem:
         bad_content_files: list[str] = []
 
         for file_path in written_files:
-            full_path = _os.path.join(self.workspace.root, file_path) if not _os.path.isabs(file_path) else file_path
+            full_path = self._resolve_ws_path(file_path)
             if not _os.path.exists(full_path):
                 missing_files.append(file_path)
                 continue
 
             try:
-                with open(full_path) as f:
+                with open(full_path, encoding="utf-8") as f:
                     file_content = f.read()
                 validation = content_validator.validate(file_path, file_content)
                 if not validation.passed:
@@ -3289,10 +3112,11 @@ class LongSystem:
 
         # 检查 execute_file 步骤执行的脚本是否生成了输出文件
         import re as _content_re
-        output_dir = _os.path.join(self.workspace.root, "output")
+        _ws_root = self._workspace_root()
+        output_dir = _os.path.join(_ws_root, "output") if _ws_root else "output"
 
         for file_path in written_files:
-            full_path = _os.path.join(self.workspace.root, file_path) if self.workspace and not _os.path.isabs(file_path) else file_path
+            full_path = self._resolve_ws_path(file_path)
             if not _os.path.exists(full_path):
                 missing_files.append(file_path)
                 continue
@@ -3324,7 +3148,7 @@ class LongSystem:
                 except Exception:
                     pass
         for script_path in executed_files:
-            full_script = _os.path.join(self.workspace.root, script_path) if not _os.path.isabs(script_path) else script_path
+            full_script = self._resolve_ws_path(script_path)
             if not _os.path.exists(full_script):
                 missing_files.append(script_path)
                 cli_adapter.console.print(
@@ -3333,8 +3157,6 @@ class LongSystem:
 
         # 扫描 output 目录检查是否有新增的报告/图表文件
         if (has_report_step or has_chart_step) and _os.path.isdir(output_dir):
-            found_report = False
-            found_chart = False
             try:
                 session_start = getattr(self, '_session_start_ts', 0)
                 for fname in _os.listdir(output_dir):
@@ -3418,8 +3240,6 @@ class LongSystem:
         """
         import os as _os
 
-        output_dir = _os.path.join(self.workspace.root, "output") if self.workspace else "output"
-
         # 收集 write_file 步骤及其写入的文件
         write_steps: list[tuple[Any, str]] = []  # (step, file_path)
         for step in plan.steps:
@@ -3442,7 +3262,7 @@ class LongSystem:
         # 检查哪些文件内容不达标
         failed_files: list[tuple[str, str]] = []  # (file_path, error_reason)
         for step, file_path in write_steps:
-            full_path = _os.path.join(self.workspace.root, file_path) if self.workspace and not _os.path.isabs(file_path) else file_path
+            full_path = self._resolve_ws_path(file_path)
             if not _os.path.exists(full_path):
                 failed_files.append((file_path, "文件不存在"))
                 continue
@@ -3562,17 +3382,16 @@ class LongSystem:
                     "\n6. ⚠️ 任务要求生成图表！必须使用 matplotlib 生成图表并保存为 PNG 文件"
                     "（如 plt.savefig('output/xxx_chart.png')），然后在 Word/PPT 文档中插入该图片。"
                     "不能只生成表格，必须有 matplotlib 图表！\n"
-                    "matplotlib 中文字体配置代码（必须包含）：\n"
+                    "⚠️ 沙箱已预置中文字体，中文标题/标签开箱即用。"
+                    "不要自己配置字体，尤其不要写 FontProperties(family='sans-serif')"
+                    "（matplotlib 会把裸字符串当 fontconfig pattern 解析，'-' 非法直接报错）"
+                    "或去猜 font/simhei.ttf 之类的路径。直接写图表代码即可：\n"
                     "```python\n"
                     "import matplotlib; matplotlib.use('Agg')\n"
                     "import matplotlib.pyplot as plt\n"
-                    "from matplotlib.font_manager import FontProperties\n"
-                    "import os as _os\n"
-                    "_font_path = _os.path.join(_os.getcwd(), 'font', 'simhei.ttf')\n"
-                    "if _os.path.exists(_font_path):\n"
-                    "    _fp = FontProperties(fname=_font_path)\n"
-                    "    plt.rcParams['font.family'] = _fp.get_name()\n"
-                    "plt.rcParams['axes.unicode_minus'] = False\n"
+                    "plt.bar(['1950年代', '2020年代'], [2, 15])\n"
+                    "plt.title('人工智能发展里程碑')\n"
+                    "plt.savefig('output/xxx_chart.png', dpi=150)\n"
                     "```\n"
                 )
 
@@ -3596,8 +3415,10 @@ class LongSystem:
                     repaired_content = "\n".join(lines)
 
                 # 写入修复后的内容
-                full_path = _os.path.join(self.workspace.root, file_path) if self.workspace and not _os.path.isabs(file_path) else file_path
-                _os.makedirs(_os.path.dirname(full_path), exist_ok=True)
+                full_path = self._resolve_ws_path(file_path)
+                _parent_dir = _os.path.dirname(full_path)
+                if _parent_dir:
+                    _os.makedirs(_parent_dir, exist_ok=True)
                 with open(full_path, "w", encoding="utf-8") as f:
                     f.write(repaired_content)
 
@@ -3701,10 +3522,15 @@ class LongSystem:
             logger.warning("PlanIR 编译时验证失败: %s", validation.errors)
             return False
 
+        # 空计划：无步骤可执行，降级
+        if not plan.steps:
+            logger.warning("PlanIR 生成了空计划，降级到直接工具调用模式")
+            return False
+
         # 单步计划直接输出
         if len(plan.steps) <= 1:
             step = plan.steps[0]
-            content = step.args.get("content", "")
+            content = (step.args or {}).get("content", "")
             if content:
                 self.active_session.add_message("assistant", content)
                 cli_adapter.console.print(content)
@@ -3728,292 +3554,112 @@ class LongSystem:
             history_msgs=history_msgs,
         )
 
-        # 4. 处理结果
-        if exec_result.success and exec_result.output_text:
-            self.active_session.add_message("assistant", exec_result.output_text)
-            cli_adapter.console.print(exec_result.output_text)
-
-            if self.memory is not None:
-                try:
-                    await self.memory.store(
-                        f"assistant: {exec_result.output_text}",
-                        memory_type=MemoryType.EPISODIC,
-                        importance=0.5,
-                    )
-                except Exception:
-                    pass
-            self._save_session()
-            self._schedule_auto_eval()
-            return True
-
-        if exec_result.success and not exec_result.output_text:
-            self.active_session.add_message("assistant", "任务已完成。")
-            self._save_session()
-            self._schedule_auto_eval()
-            return True
-
-        if not exec_result.success:
-            if exec_result.errors:
-                for err in exec_result.errors:
-                    cli_adapter.console.print(f"[yellow]  ⚠ {err}[/yellow]")
-            return False
-
-        return True
-
-        user_msgs = [m for m in history_msgs if m.get("role") == "user"]
-        if not user_msgs:
-            return False
-
-        user_message = user_msgs[-1].get("content", "")
-
-        complexity = self.plan_executor.classifier.classify(user_message, tools)
-
-        complexity_style = {
-            "simple": "[green]简单[/green]",
-            "moderate": "[yellow]中等[/yellow]",
-            "complex": "[red]复杂[/red]",
-        }
-        complexity_label = complexity_style.get(complexity.level.value, complexity.level.value)
-
-        logger.info(
-            "任务复杂度: %s (score=%.1f, reasons=%s)",
-            complexity.level.value,
-            complexity.score,
-            complexity.reasons,
-        )
-
-        if not complexity.needs_planning:
+        # 3.5 占位参数被拒绝时，带提示重新生成一次计划
+        if getattr(exec_result, "has_placeholder_params", False):
             cli_adapter.console.print(
-                f"[dim]任务复杂度: {complexity_label}，使用直接工具调用模式[/dim]"
+                "[yellow]正在重新生成计划（要求包含实际代码内容）...[/yellow]"
             )
-            return False
-
-        cli_adapter.console.print(
-            f"[dim]任务复杂度: {complexity_label}，生成结构化执行计划...[/dim]"
-        )
-
-        with cli_adapter.console.status("[bold cyan]📋 正在生成执行计划...[/bold cyan]", spinner="dots"):
-            _PLAN_MAX_RETRIES = 2
-            plan = None
-            for _plan_attempt in range(_PLAN_MAX_RETRIES):
-                try:
-                    plan = await asyncio.wait_for(
-                        self.plan_executor.generate_plan(
-                            user_message=user_message,
-                            history_msgs=history_msgs,
-                            available_tools=tools,
-                            memory_controller=self.memory,
-                        ),
-                        timeout=300,
-                    )
-                    # 记录计划生成中的 LLM 调用次数（generate_plan 内部可能多次调用 LLM）
-                    self._llm_call_total += 1
-                    if plan is not None:
-                        break
-                except asyncio.TimeoutError:
-                    self._record_llm_timeout()
-                    if _plan_attempt < _PLAN_MAX_RETRIES - 1:
-                        cli_adapter.console.print(f"[dim]计划生成超时，重试 {_plan_attempt + 2}/{_PLAN_MAX_RETRIES}...[/dim]")
-                    else:
-                        cli_adapter.console.print("[dim]计划生成超时，降级为直接工具调用模式[/dim]")
-                        return False
-                except Exception:
-                    self._llm_call_total += 1
-                    if _plan_attempt < _PLAN_MAX_RETRIES - 1:
-                        cli_adapter.console.print(f"[dim]计划生成失败，重试 {_plan_attempt + 2}/{_PLAN_MAX_RETRIES}...[/dim]")
-                    else:
-                        cli_adapter.console.print("[dim]计划生成失败，降级为直接工具调用模式[/dim]")
-                        return False
-
-        if plan is None:
-            cli_adapter.console.print("[dim]计划生成失败，降级为直接工具调用模式[/dim]")
-            return False
-
-        if len(plan.steps) <= 1:
-            # 单步计划检查：如果单步包含有意义的代码生成动作，仍执行计划
-            from long.ir.plan_ir import ActionType
-
-            _CODE_GEN_ACTIONS = {
-                ActionType.WRITE_FILE,
-                ActionType.CALL_TOOL,
-                ActionType.EXECUTE_FILE,
-                ActionType.CALL_SKILL,
-            }
-            has_code_gen = any(
-                step.action in _CODE_GEN_ACTIONS for step in plan.steps
-            )
-            if not has_code_gen:
-                cli_adapter.console.print("[dim]计划仅含单步且无代码生成，使用直接工具调用模式[/dim]")
-                return False
-
-        async def tool_executor(tool_name: str, arguments: dict[str, Any]) -> str:
-            return await self._execute_tool(tool_name, arguments)
-
-        exec_result = await self.plan_executor.execute_plan(
-            plan=plan,
-            cli_adapter=cli_adapter,
-            tool_executor=tool_executor,
-            history_msgs=history_msgs,
-        )
-
-        # 占位参数被拒绝时，重试计划生成（带提示）
-        if exec_result.has_placeholder_params:
-            cli_adapter.console.print("[yellow]正在重新生成计划（要求包含实际代码内容）...[/yellow]")
-            # 在 history_msgs 中添加重试提示
             retry_hint = (
                 "上一次生成的计划中 write_file 的 content 参数包含占位描述（如'根据搜索结果编写代码'），"
                 "而不是实际的可执行代码。请重新生成计划，确保 write_file 的 content 参数"
                 "包含完整的、可执行的 Python 代码，不要写描述性文字。"
             )
             retry_msgs = history_msgs + [{"role": "user", "content": retry_hint}]
+            retry_plan = None
             try:
                 retry_plan = await asyncio.wait_for(
                     self.plan_executor.generate_plan(
                         user_message=user_message,
                         history_msgs=retry_msgs,
                         available_tools=tools,
-                        memory_controller=self.memory,
                     ),
-                    timeout=300,
+                    timeout=180,
                 )
-                if retry_plan is not None:
-                    from long.ir.plan_ir import ActionType
+            except Exception as e:
+                logger.warning("占位参数重试计划生成失败: %s", e)
 
-                    _CODE_GEN_ACTIONS = {
-                        ActionType.WRITE_FILE,
-                        ActionType.CALL_TOOL,
-                        ActionType.EXECUTE_FILE,
-                        ActionType.CALL_SKILL,
-                    }
-                    has_code_gen = any(
-                        step.action in _CODE_GEN_ACTIONS for step in retry_plan.steps
-                    )
-                    if len(retry_plan.steps) > 1 or has_code_gen:
-                        plan = retry_plan
-                        exec_result = await self.plan_executor.execute_plan(
-                            plan=plan,
-                            cli_adapter=cli_adapter,
-                            tool_executor=tool_executor,
-                            history_msgs=history_msgs,
-                        )
-                        if exec_result.success:
-                            cli_adapter.console.print("[green]✅ 重新生成的计划执行成功[/green]")
-            except Exception:
-                pass
-
-        # 注意：不再单独打印 exec_result.output_text（通常是简短摘要），
-        # 统一由 _print_generated_files 读取完整报告文件内容输出
-
-        if exec_result.success:
-            verified = await self._verify_plan_deliverables(plan, cli_adapter, exec_result)
-
-            if not verified:
-                # 先尝试自动修复失败的交付物
-                cli_adapter.console.print(
-                    "[bold yellow]⚠️ 计划完成但交付物验证失败，尝试自动修复...[/bold yellow]"
+            if retry_plan is not None and len(retry_plan.steps) > 1:
+                plan = retry_plan
+                exec_result = await self.plan_executor.execute_plan(
+                    plan=plan,
+                    cli_adapter=cli_adapter,
+                    tool_executor=tool_executor,
+                    history_msgs=history_msgs,
                 )
-                repaired = await self._repair_plan_deliverables(plan, cli_adapter, exec_result, history_msgs, tools)
-                if repaired:
-                    cli_adapter.console.print("[dim]  ✅ 自动修复成功[/dim]")
-                else:
-                    cli_adapter.console.print(
-                        "[bold yellow]  自动修复失败，降级到认知运行时[/bold yellow]"
-                    )
-                    return False
+                if exec_result.success:
+                    cli_adapter.console.print("[green]✅ 重新生成的计划执行成功[/green]")
 
-            # 读取生成的报告/图表文件内容并输出到前端
-            report_content = await self._print_generated_files(plan, cli_adapter)
-
-            # 将报告内容作为最终输出保存
-            if report_content:
-                self.active_session.add_message("assistant", report_content)
-                if self.memory is not None:
-                    try:
-                        await self.memory.add_message("assistant", report_content)
-                    except Exception:
-                        pass
-                if self.memory is not None:
-                    try:
-                        await self.memory.store(
-                            f"assistant: {report_content[:500]}",
-                            memory_type=MemoryType.EPISODIC,
-                            importance=0.5,
-                        )
-                    except Exception:
-                        pass
-                self._save_session()
-                self._schedule_auto_eval()
-                return True
-
-        if exec_result.success and exec_result.output_text:
-            if self.memory is not None:
-                try:
-                    await self.memory.store(
-                        f"assistant: {exec_result.output_text}",
-                        memory_type=MemoryType.EPISODIC,
-                        importance=0.5,
-                    )
-                except Exception:
-                    pass
-            self._save_session()
-            self._schedule_auto_eval()
-            return True
-
-        if exec_result.success and not exec_result.output_text:
-            from long.llm.base import LLMMessage
-
-            cli_adapter.console.print()
-            gen_status = cli_adapter.console.status(
-                "[bold green]✨ 正在生成回复...[/bold green]", spinner="bouncingBar"
-            )
-            gen_status.start()
-            try:
-                response_parts: list[str] = []
-                first_token = True
-                async for token in self.llm.stream_chat(
-                    [LLMMessage(role=m["role"], content=m.get("content", ""), tool_calls=m.get("tool_calls"), tool_call_id=m.get("tool_call_id")) for m in history_msgs],
-                    purpose="chat",
-                ):
-                    if first_token:
-                        gen_status.stop()
-                        first_token = False
-                    response_parts.append(token)
-                    cli_adapter.console.print(token, end="", highlight=False)
-                response_text = "".join(response_parts)
-            finally:
-                gen_status.stop()
-
-            cli_adapter.console.print()
-            cli_adapter.console.print()
-
-            self.active_session.add_message("assistant", response_text)
-
-            if self.memory is not None:
-                try:
-                    await self.memory.add_message("assistant", response_text)
-                except Exception:
-                    pass
-
-            if self.memory is not None:
-                try:
-                    await self.memory.store(
-                        f"assistant: {response_text}",
-                        memory_type=MemoryType.EPISODIC,
-                        importance=0.5,
-                    )
-                except Exception:
-                    pass
-            self._save_session()
-            self._schedule_auto_eval()
-            return True
-
+        # 4. 执行失败 → 降级到直接工具调用
         if not exec_result.success:
             if exec_result.errors:
                 for err in exec_result.errors:
                     cli_adapter.console.print(f"[yellow]  ⚠ {err}[/yellow]")
-            cli_adapter.console.print("[yellow]计划执行未完成，降级到认知运行时模式...[/yellow]")
+            cli_adapter.console.print(
+                "[yellow]计划执行未完成，降级到直接工具调用模式...[/yellow]"
+            )
             return False
 
+        # 5. 交付物验证：不通过时先尝试自动修复，仍失败则降级
+        try:
+            verified = await self._verify_plan_deliverables(plan, cli_adapter, exec_result)
+        except Exception as e:
+            logger.warning("交付物验证异常，视为通过: %s", e)
+            verified = True
+
+        if not verified:
+            cli_adapter.console.print(
+                "[bold yellow]⚠️ 计划完成但交付物验证失败，尝试自动修复...[/bold yellow]"
+            )
+            try:
+                repaired = await self._repair_plan_deliverables(
+                    plan, cli_adapter, exec_result, history_msgs, tools
+                )
+            except Exception as e:
+                logger.warning("交付物自动修复异常: %s", e)
+                repaired = False
+
+            if repaired:
+                cli_adapter.console.print("[dim]  ✅ 自动修复成功[/dim]")
+            else:
+                cli_adapter.console.print(
+                    "[bold yellow]  自动修复失败，降级到直接工具调用模式[/bold yellow]"
+                )
+                return False
+
+        # 6. 输出交付物：优先完整报告/图表/文件下载链接，其次 output_text
+        report_content: str | None = None
+        try:
+            report_content = await self._print_generated_files(plan, cli_adapter)
+        except Exception as e:
+            logger.warning("读取计划生成的文件失败: %s", e)
+
+        final_text = report_content or exec_result.output_text or ""
+        if final_text and not report_content:
+            # report_content 已在 _print_generated_files 内部打印，避免重复输出
+            cli_adapter.console.print(final_text)
+
+        if not final_text:
+            final_text = "任务已完成。"
+            cli_adapter.console.print(final_text)
+
+        self.active_session.add_message("assistant", final_text)
+
+        if self.memory is not None:
+            try:
+                await self.memory.add_message("assistant", final_text)
+            except Exception:
+                pass
+            try:
+                await self.memory.store(
+                    f"assistant: {final_text[:500]}",
+                    memory_type=MemoryType.EPISODIC,
+                    importance=0.5,
+                )
+            except Exception:
+                pass
+
+        self._save_session()
+        self._schedule_auto_eval()
         return True
 
     async def _fallback_tool_call_loop(
@@ -4911,10 +4557,20 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # 项目根目录 = 本文件所在目录的父目录的父目录 (src/long/ → D:\project\longAgent)
+    _project_root = Path(__file__).resolve().parent.parent.parent
+
     # 配置目录：优先使用显式指定的路径；否则回退到 CWD/configs；都不存在则用包内 configs/
-    _package_configs = Path(__file__).resolve().parent.parent.parent / "configs"
+    _package_configs = _project_root / "configs"
     if args.config_dir is None:
         args.config_dir = "configs" if Path("configs").exists() else str(_package_configs)
+
+    # 工作区目录：相对路径相对于项目根目录解析，保证无论在哪执行都指向同一个位置
+    _ws = Path(args.workspace)
+    if not _ws.is_absolute():
+        args.workspace = str(_project_root / args.workspace)
+
+    log_level = getattr(logging, args.log_level)
 
     log_level = getattr(logging, args.log_level)
 

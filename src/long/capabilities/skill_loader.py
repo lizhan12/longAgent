@@ -287,12 +287,15 @@ class SkillLoader:
     def _read_code(self, skill_path: Path) -> str | None:
         """读取 Skill 代码"""
         try:
+            # 显式 UTF-8：默认按 locale 解码，Windows(GBK) 下含中文注释的 skill
+            # 代码会 UnicodeDecodeError，被当成 "Cannot read skill code" 判定为不安全，
+            # 整个 skill 直接加载失败。
             if skill_path.is_dir():
                 init_file = skill_path / "__init__.py"
                 if init_file.exists():
-                    return init_file.read_text()
+                    return init_file.read_text(encoding="utf-8", errors="replace")
             elif skill_path.is_file():
-                return skill_path.read_text()
+                return skill_path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             pass
         return None

@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 try:
     import resource
 except ImportError:
     resource = None  # Windows: resource module not available
 import signal
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -24,6 +26,34 @@ from .base import (
     ResourceLimits,
     Sandbox,
 )
+
+# Windows 没有 SIGKILL；os.kill(pid, SIGTERM) 在 Windows 上走 TerminateProcess，
+# 效果等价。没有这个兜底，超时和 kill() 路径会直接抛 AttributeError。
+_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+# matplotlib 默认字体 DejaVu Sans 没有中文字形，中文标签会渲染成方块。
+# 按优先级挑一个系统里真实存在的中文字体写进沙箱 matplotlibrc。
+_CJK_FONT_CANDIDATES = (
+    "Microsoft YaHei",      # Windows
+    "SimHei",               # Windows
+    "Noto Sans CJK SC",     # Linux
+    "Source Han Sans SC",   # Linux
+    "WenQuanYi Zen Hei",    # Linux
+    "PingFang SC",          # macOS
+    "Hiragino Sans GB",     # macOS
+    "SimSun",
+)
+
+@functools.lru_cache(maxsize=1)
+def _detect_cjk_font() -> str | None:
+    """探测系统可用的中文字体名（扫描字体较慢，缓存一次）"""
+    try:
+        from matplotlib import font_manager
+
+        available = {f.name for f in font_manager.fontManager.ttflist}
+    except Exception:
+        return None
+    return next((name for name in _CJK_FONT_CANDIDATES if name in available), None)
 
 
 class ProcessSandbox(Sandbox):
@@ -56,7 +86,9 @@ class ProcessSandbox(Sandbox):
 
         # 写入代码文件
         code_file = Path(temp_dir) / self._get_filename(spec.language)
-        code_file.write_text(spec.code)
+        # 显式 UTF-8：默认按 locale 编码写入，Windows(GBK) 下代码里的中文/emoji
+        # 会直接抛 UnicodeEncodeError，执行还没开始就失败。
+        code_file.write_text(spec.code, encoding="utf-8")
 
         self._sandboxes[sandbox_id] = {
             "spec": spec,
@@ -110,8 +142,8 @@ class ProcessSandbox(Sandbox):
                 )
             except asyncio.TimeoutError:
                 try:
-                    os.kill(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
+                    os.kill(process.pid, _KILL_SIGNAL)
+                except (ProcessLookupError, OSError):
                     pass
                 await process.wait()
 
@@ -161,9 +193,9 @@ class ProcessSandbox(Sandbox):
             return False
 
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, _KILL_SIGNAL)
             return True
-        except ProcessLookupError:
+        except (ProcessLookupError, OSError):
             return False
 
     async def cleanup(self, sandbox_id: str) -> None:
@@ -192,14 +224,18 @@ class ProcessSandbox(Sandbox):
 
     def _build_command(self, spec: ExecutionSpec, code_file: str) -> list[str]:
         """构建执行命令"""
+        # Windows 上没有 python3，直接执行会以 9009 (command not found) 失败。
+        # 用 sys.executable 还能保证沙箱和宿主用同一个解释器/依赖环境。
+        python_exe = sys.executable or ("python" if os.name == "nt" else "python3")
+
         commands = {
-            "python": ["python3", code_file],
+            "python": [python_exe, code_file],
             "javascript": ["node", code_file],
             "shell": ["bash", code_file],
             "bash": ["bash", code_file],
         }
 
-        cmd = commands.get(spec.language, ["python3", code_file])
+        cmd = commands.get(spec.language, [python_exe, code_file])
         cmd.extend(spec.args)
         return cmd
 
@@ -221,6 +257,22 @@ class ProcessSandbox(Sandbox):
         except Exception:
             pass
 
+        # 预置 matplotlibrc，让沙箱里的图表默认就能正确渲染中文。
+        # 否则 matplotlib 回落到 DejaVu Sans（无中文字形），中文标签全是方块，
+        # 模型只能自己去猜字体路径 / 写 FontProperties，反而更容易出错。
+        cjk_font = _detect_cjk_font()
+        if cjk_font:
+            try:
+                (mpl_dir / "matplotlibrc").write_text(
+                    "font.family: sans-serif\n"
+                    f"font.sans-serif: {cjk_font}, DejaVu Sans\n"
+                    # 中文字体的减号字形常缺失，关掉 unicode 减号避免负数刻度变方块
+                    "axes.unicode_minus: False\n",
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": temp_dir,
@@ -229,6 +281,8 @@ class ProcessSandbox(Sandbox):
             "TMP": temp_dir,
             "LANG": "en_US.UTF-8",
             "PYTHONIOENCODING": "utf-8",
+            # 让 open() 等默认走 UTF-8，避免生成的代码在 GBK 环境写中文文件时失败
+            "PYTHONUTF8": "1",
             "OPENBLAS_NUM_THREADS": "2",
             "MKL_NUM_THREADS": "2",
             "OMP_NUM_THREADS": "2",
@@ -236,8 +290,28 @@ class ProcessSandbox(Sandbox):
             "MPLBACKEND": "Agg",
             "OUTPUT_DIR": output_dir_path,
             "XDG_DATA_DIRS": "/usr/share:/usr/local/share",
-            "FONTCONFIG_FILE": os.environ.get("FONTCONFIG_FILE", "/etc/fonts/fonts.conf"),
         }
+
+        # fontconfig 只在 POSIX 上有意义，Windows 上指向 /etc/fonts 会让 matplotlib 报错
+        _fontconfig = os.environ.get("FONTCONFIG_FILE") or (
+            "" if os.name == "nt" else "/etc/fonts/fonts.conf"
+        )
+        if _fontconfig:
+            env["FONTCONFIG_FILE"] = _fontconfig
+
+        # Windows: 子进程缺少 SystemRoot/COMSPEC 时 Python 无法初始化 socket/ssl，
+        # 缺少 PATHEXT 时找不到 .exe。这些必须从宿主继承。
+        if os.name == "nt":
+            for _win_key in (
+                "SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT",
+                "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+            ):
+                _win_val = os.environ.get(_win_key)
+                if _win_val:
+                    env[_win_key] = _win_val
+            # 与 HOME 保持一致，指向沙箱临时目录而不是真实用户目录
+            for _home_key in ("USERPROFILE", "APPDATA", "LOCALAPPDATA"):
+                env[_home_key] = temp_dir
 
         Path(output_dir_path).mkdir(parents=True, exist_ok=True)
 

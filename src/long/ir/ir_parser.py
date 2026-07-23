@@ -16,6 +16,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .plan_ir import ActionType, PlanIR
+from .repair_strategies import DEFAULT_REPAIR_STRATEGIES
 
 logger = logging.getLogger(__name__)
 
@@ -32,20 +33,23 @@ class IRRepair:
 
 
 class IRRepairStrategy(ABC):
-    """修复策略基类"""
+    """修复策略基类
+
+    注意：该接口与 repair_strategies.py 中的 IRRepairStrategy 必须保持一致。
+    """
+
+    name: str = ""
 
     @abstractmethod
-    def can_repair(self, error: Exception, context: dict[str, Any]) -> bool:
+    def can_repair(self, data: dict[str, Any], error: str) -> bool:
         ...
 
     @abstractmethod
-    def repair(
-        self, data: dict[str, Any], error: Exception
-    ) -> tuple[dict[str, Any], IRRepair]:
+    def repair(self, data: dict[str, Any]) -> dict[str, Any]:
         ...
 
 
-DEFAULT_STRATEGIES: list[type[IRRepairStrategy]] = []
+DEFAULT_STRATEGIES: list[IRRepairStrategy] = []
 
 
 class IRParseStatus(str, Enum):
@@ -126,10 +130,13 @@ class IRParser:
     def __init__(
         self,
         max_retries: int = 3,
-        strategies: list[type[IRRepairStrategy]] | None = None,
+        strategies: list[IRRepairStrategy] | None = None,
     ) -> None:
         self.max_retries = max_retries
-        self.strategies = [cls() for cls in (strategies or DEFAULT_STRATEGIES)]
+        # 如果未传入策略，从 DEFAULT_REPAIR_STRATEGIES 加载
+        from .repair_strategies import DEFAULT_REPAIR_STRATEGIES as _rs
+
+        self.strategies = strategies or _rs
         self.metrics = ParseMetrics()
 
     def parse(self, llm_output: str, structured_output: bool = False) -> IRParseResult:
@@ -517,16 +524,24 @@ class IRParser:
             (修复后的数据, 修复记录列表)
         """
         repairs: list[IRRepair] = []
-        context = {"errors": errors}
 
         for strategy in self.strategies:
+            strategy_name = getattr(strategy, "name", strategy.__class__.__name__)
             for error_msg in errors:
                 try:
-                    if strategy.can_repair(Exception(error_msg), context):
-                        data, repair = strategy.repair(data, Exception(error_msg))
-                        if repair.success:
-                            repairs.append(repair)
-                except Exception:
+                    if strategy.can_repair(data, error_msg):
+                        before = dict(data)
+                        data = strategy.repair(data)
+                        repairs.append(IRRepair(
+                            strategy=strategy_name,
+                            success=True,
+                            before=before,
+                            after=dict(data),
+                            description=f"应用修复策略 {strategy_name}: {error_msg[:80]}",
+                        ))
+                        break  # 只匹配第一个适用的错误
+                except Exception as e:
+                    logger.debug("修复策略 %s 执行异常: %s", strategy_name, e)
                     continue
 
         return data, repairs
@@ -556,10 +571,30 @@ class IRParser:
                 "- 如果不需要回退步骤，请设置 fallback_step 为 null"
             )
 
+        # 检测是否输出了非计划内容（如直接回答了问题）
+        non_plan_hint = ""
+        if any("plan_id" in e or "goal" in e for e in errors):
+            non_plan_hint = (
+                "\n\n⚠️ 你的输出不像是执行计划，而是直接回答了用户的问题。\n"
+                "请生成一个结构化执行计划（JSON），包含 plan_id、goal 和 steps 三个必需字段，"
+                "而不是直接回答问题。\n"
+                "例如：\n"
+                '```json\n'
+                '{\n'
+                '  "plan_id": "plan_weather_compare",\n'
+                '  "goal": "对比杭州和苏州未来一周的天气",\n'
+                '  "steps": [\n'
+                '    {"step_id": "step_1", "action": "call_tool", "args": {"tool_name": "query_weather", "parameters": {"city": "杭州"}}}\n'
+                '  ]\n'
+                '}\n'
+                '```\n'
+            )
+
         return f"""之前的输出存在以下问题：
 
 {error_text}
 {dep_guidance}
+{non_plan_hint}
 
 原始输出：
 ```

@@ -7,6 +7,12 @@ import re
 import sys
 import urllib.request
 
+# Windows 控制台默认 GBK，搜索结果里的 © / emoji / 日文等字符会触发
+# UnicodeEncodeError 并让脚本以 exit=1 退出。强制按 UTF-8 输出。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 TAVILY_URL = "https://api.tavily.com/search"
 
 

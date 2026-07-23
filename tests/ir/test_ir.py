@@ -271,3 +271,33 @@ class TestIRParser:
         result = self.parser.parse(broken)
         # 可能被修复或需要重试
         assert result.status in (IRParseStatus.SUCCESS, IRParseStatus.REPAIRABLE, IRParseStatus.UNPARSEABLE)
+
+    def test_parse_non_plan_response_no_plan_id(self):
+        """LLM 返回非计划内容（如直接回答天气问题），缺少 plan_id 和 goal"""
+        data = {'city': '杭州'}
+        result = self.parser.parse(json.dumps(data))
+        # DefaultsRepairStrategy 应填充缺失字段，返回 REPAIRABLE
+        assert result.status == IRParseStatus.REPAIRABLE, f"期望 REPAIRABLE, 实际 {result.status}"
+        assert result.plan is not None
+        assert result.plan.plan_id == "plan_auto_repaired"
+        assert result.plan.goal == "plan_auto_repaired"
+        assert len(result.plan.steps) == 0
+
+    def test_parse_non_plan_response_empty_steps(self):
+        """LLM 返回只有 plan_id 和 goal 但没有 steps 的 JSON"""
+        data = {'plan_id': 'p1', 'goal': '天气对比'}
+        result = self.parser.parse(json.dumps(data))
+        # plan_id 和 goal 已存在，可直接解析成功
+        assert result.status in (IRParseStatus.SUCCESS, IRParseStatus.REPAIRABLE), f"实际 {result.status}"
+        assert result.plan is not None
+        assert result.plan.plan_id == "p1"
+        # steps 有默认值，应非 None
+        assert result.plan.steps is not None
+
+    def test_parse_non_plan_response_direct_answer(self):
+        """LLM 直接回答用户问题而不是生成计划（如 '杭州未来一周小雨'）"""
+        raw_text = '杭州未来一周以小雨为主，气温在25-30度之间'
+        result = self.parser.parse(raw_text)
+        # 无法提取 JSON，应返回 UNPARSEABLE
+        assert result.status == IRParseStatus.UNPARSEABLE
+        assert result.plan is None

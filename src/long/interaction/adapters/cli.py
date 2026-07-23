@@ -54,20 +54,33 @@ class CLIAdapter(InteractionProtocol):
     ) -> None:
         self.console = console or Console()
 
-        command_completer = WordCompleter(
+        self._command_completer = WordCompleter(
             list(self.COMMANDS.keys()),
             ignore_case=True,
         )
 
-        self.prompt_session: PromptSession[str] = PromptSession(
-            history=InMemoryHistory(),
-            auto_suggest=AutoSuggestFromHistory(),
-            completer=command_completer,
-        )
+        self._prompt_session: PromptSession[str] | None = None
 
         self._active = False
         self._stream_buffer = ""
         self._command_handlers: dict[str, Any] = {}
+
+    @property
+    def prompt_session(self) -> PromptSession[str]:
+        """延迟创建 prompt_toolkit 会话
+
+        PromptSession 在构造时就要求 stdout 是真实的 Windows 控制台，
+        pytest 捕获输出、管道重定向、WebUI 模式下都会抛
+        NoConsoleScreenBufferError，导致 CLIAdapter 根本无法实例化。
+        只有真正要读用户输入时才创建。
+        """
+        if self._prompt_session is None:
+            self._prompt_session = PromptSession(
+                history=InMemoryHistory(),
+                auto_suggest=AutoSuggestFromHistory(),
+                completer=self._command_completer,
+            )
+        return self._prompt_session
 
     def start_session(self) -> None:
         """启动 CLI 会话"""

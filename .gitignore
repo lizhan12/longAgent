@@ -31,7 +31,8 @@ Thumbs.db
 .trae/
 
 # Project runtime
-workspace/
+# 必须锚定到仓库根：非锚定的 workspace/ 会连 src/long/workspace/ 源码包一起忽略
+/workspace/
 *.log
 
 # Test / Eval data
