@@ -1,0 +1,187 @@
+{
+  "scenarios": [
+    {
+      "name": "weather_compare_chart_word",
+      "user_request": "杭州和苏州的未来一周的天气的对比，要有图表，要word格式",
+      "description": "用户要求对比两个城市的天气，生成图表并输出Word文档",
+      "expected_outputs": [".docx", ".png"],
+      "required_tools": ["query_weather", "execute_code", "write_file"],
+      "min_steps": 4,
+      "max_steps": 8,
+      "plan_template": {
+        "plan_id": "plan_weather_compare",
+        "goal": "对比杭州和苏州未来一周的天气，生成图表并输出Word文档",
+        "steps": [
+          {
+            "step_id": "step_1",
+            "action": "query_weather",
+            "args": {"city": "杭州"},
+            "depends_on": [],
+            "risk_level": "low"
+          },
+          {
+            "step_id": "step_2",
+            "action": "query_weather",
+            "args": {"city": "苏州"},
+            "depends_on": [],
+            "risk_level": "low"
+          },
+          {
+            "step_id": "step_3",
+            "action": "execute_code",
+            "args": {
+              "code": "import matplotlib.pyplot as plt\nplt.savefig('output/weather_chart.png')"
+            },
+            "depends_on": ["step_1", "step_2"],
+            "risk_level": "medium"
+          },
+          {
+            "step_id": "step_4",
+            "action": "write_file",
+            "args": {
+              "path": "output/generate_word.py",
+              "content": "from docx import Document\ndoc = Document()\ndoc.save('output/weather_report.docx')"
+            },
+            "depends_on": ["step_3"],
+            "risk_level": "medium"
+          },
+          {
+            "step_id": "step_5",
+            "action": "execute_file",
+            "args": {"path": "output/generate_word.py"},
+            "depends_on": ["step_4"],
+            "risk_level": "medium"
+          }
+        ],
+        "estimated_steps": 5
+      }
+    },
+    {
+      "name": "ai_history_ppt_report",
+      "user_request": "写一篇关于ai发展报告的历史报告，要有图的ppt",
+      "description": "用户要求生成AI发展历史报告PPT，包含图表",
+      "expected_outputs": [".png"],
+      "runtime_outputs": [".pptx"],
+      "required_tools": ["tavily_search", "execute_code", "write_file"],
+      "min_steps": 4,
+      "max_steps": 10,
+      "plan_template": {
+        "plan_id": "plan_ai_history_ppt",
+        "goal": "生成AI发展历史报告PPT，包含图表",
+        "steps": [
+          {
+            "step_id": "step_1",
+            "action": "tavily_search",
+            "args": {"query": "AI发展历史 里程碑 1950-2026"},
+            "depends_on": [],
+            "risk_level": "low"
+          },
+          {
+            "step_id": "step_2",
+            "action": "tavily_search",
+            "args": {"query": "AI市场规模 投资趋势 2020-2026"},
+            "depends_on": [],
+            "risk_level": "low"
+          },
+          {
+            "step_id": "step_3",
+            "action": "execute_code",
+            "args": {
+              "code": "import matplotlib...plt.savefig('output/chart_timeline.png')"
+            },
+            "depends_on": ["step_1", "step_2"],
+            "risk_level": "medium"
+          },
+          {
+            "step_id": "step_4",
+            "action": "write_file",
+            "args": {
+              "path": "output/generate_ppt.py",
+              "content": "from pptx import Presentation..."
+            },
+            "depends_on": ["step_3"],
+            "risk_level": "medium"
+          },
+          {
+            "step_id": "step_5",
+            "action": "execute_file",
+            "args": {"path": "output/generate_ppt.py"},
+            "depends_on": ["step_4"],
+            "risk_level": "medium"
+          }
+        ],
+        "estimated_steps": 5
+      }
+    },
+    {
+      "name": "weather_simple_query",
+      "user_request": "杭州今天天气怎么样",
+      "description": "用户简单查询天气",
+      "expected_outputs": [],
+      "required_tools": ["query_weather"],
+      "min_steps": 1,
+      "max_steps": 2,
+      "plan_template": {
+        "plan_id": "plan_weather_query",
+        "goal": "查询杭州今天的天气",
+        "steps": [
+          {
+            "step_id": "step_1",
+            "action": "query_weather",
+            "args": {"city": "杭州"},
+            "depends_on": [],
+            "risk_level": "low"
+          }
+        ],
+        "estimated_steps": 1
+      }
+    },
+    {
+      "name": "multi_tool_report",
+      "user_request": "搜索北京和上海的最新科技新闻，生成对比报告，保存为PDF",
+      "description": "用户要求搜索两个城市的科技新闻，生成对比报告PDF",
+      "expected_outputs": [".pdf"],
+      "required_tools": ["tavily_search", "write_file", "execute_file"],
+      "min_steps": 3,
+      "max_steps": 8,
+      "plan_template": {
+        "plan_id": "plan_tech_news_report",
+        "goal": "搜索北京和上海最新科技新闻，生成对比报告PDF",
+        "steps": [
+          {
+            "step_id": "step_1",
+            "action": "tavily_search",
+            "args": {"query": "北京 最新科技新闻 2026"},
+            "depends_on": [],
+            "risk_level": "low"
+          },
+          {
+            "step_id": "step_2",
+            "action": "tavily_search",
+            "args": {"query": "上海 最新科技新闻 2026"},
+            "depends_on": [],
+            "risk_level": "low"
+          },
+          {
+            "step_id": "step_3",
+            "action": "write_file",
+            "args": {
+              "path": "output/generate_pdf.py",
+              "content": "from fpdf import FPDF\npdf = FPDF()\npdf.output('output/tech_report.pdf')"
+            },
+            "depends_on": ["step_1", "step_2"],
+            "risk_level": "medium"
+          },
+          {
+            "step_id": "step_4",
+            "action": "execute_file",
+            "args": {"path": "output/generate_pdf.py"},
+            "depends_on": ["step_3"],
+            "risk_level": "medium"
+          }
+        ],
+        "estimated_steps": 4
+      }
+    }
+  ]
+}
