@@ -1,0 +1,6 @@
+{
+  "description": "LLM 返回了 steps 但缺少 plan_id 和 goal",
+  "input": "{\"steps\": [{\"step_id\": \"s1\", \"action\": \"search\", \"args\": {\"query\": \"天气\"}}]}",
+  "expected_status": "repairable",
+  "tags": ["non_plan", "missing_fields"]
+}

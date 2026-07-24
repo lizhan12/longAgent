@@ -1,0 +1,6 @@
+{
+  "description": "LLM 直接返回纯文字回答，不是 JSON 格式",
+  "input": "杭州未来一周以小雨为主，气温在25-30度之间，苏州天气类似。",
+  "expected_status": "unparseable",
+  "tags": ["non_plan", "text_only"]
+}

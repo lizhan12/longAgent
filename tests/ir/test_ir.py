@@ -4,6 +4,7 @@
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -301,3 +302,60 @@ class TestIRParser:
         # 无法提取 JSON，应返回 UNPARSEABLE
         assert result.status == IRParseStatus.UNPARSEABLE
         assert result.plan is None
+
+
+# ======================== Fixture 驱动的参数化测试 ========================
+
+_FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
+
+
+def _load_fixtures() -> list[tuple[str, str, str, list[str]]]:
+    """加载 fixtures/ 目录下所有测试用例
+
+    Returns:
+        [(description, input_text, expected_status, tags), ...]
+    """
+    if not _FIXTURE_DIR.exists():
+        return []
+
+    cases: list[tuple[str, str, str, list[str]]] = []
+    for fpath in sorted(_FIXTURE_DIR.glob("*.json")):
+        try:
+            data = json.loads(fpath.read_text(encoding="utf-8"))
+            cases.append((
+                data.get("description", fpath.stem),
+                data["input"],
+                data["expected_status"],
+                data.get("tags", []),
+            ))
+        except (KeyError, json.JSONDecodeError) as e:
+            cases.append((f"ERROR: {fpath.name} - {e}", "", "unparseable", []))
+    return cases
+
+
+@pytest.mark.parametrize(
+    "description, llm_output, expected_status, tags",
+    _load_fixtures(),
+    ids=lambda x: x[:50] if isinstance(x, str) else str(x),
+)
+def test_parse_with_fixtures(description, llm_output, expected_status, tags):
+    """用 fixtures/ 目录下的真实 LLM 输出场景测试解析器"""
+    parser = IRParser()
+    result = parser.parse(llm_output)
+    status_map = {
+        "success": IRParseStatus.SUCCESS,
+        "repairable": IRParseStatus.REPAIRABLE,
+        "unparseable": IRParseStatus.UNPARSEABLE,
+    }
+    expected = status_map.get(expected_status)
+    assert result.status == expected, (
+        f"[{description}] 期望 {expected_status}, 实际 {result.status.value}\n"
+        f"  tags: {tags}\n"
+        f"  errors: {result.errors}\n"
+        f"  repairs: {len(result.repairs)}"
+    )
+    # 验证一致性：SUCCESS/REPAIRABLE 必须有 plan，UNPARSEABLE 无 plan
+    if result.status in (IRParseStatus.SUCCESS, IRParseStatus.REPAIRABLE):
+        assert result.plan is not None, f"[{description}] 解析成功但 plan 为 None"
+    else:
+        assert result.plan is None, f"[{description}] 解析失败但 plan 不为 None"

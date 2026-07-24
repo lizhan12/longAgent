@@ -1,0 +1,6 @@
+{
+  "description": "LLM 输出被截断，JSON 不完整",
+  "input": "{\"plan_id\": \"p1\", \"goal\": \"测试截断",
+  "expected_status": "success",
+  "tags": ["format", "truncated", "repaired"]
+}

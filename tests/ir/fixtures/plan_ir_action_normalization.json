@@ -1,0 +1,6 @@
+{
+  "description": "LLM 将工具名直接用作 action（如 read_skill_md），需要自动映射为 call_tool",
+  "input": "{\"plan_id\": \"p1\", \"goal\": \"读取 skill 文档\", \"steps\": [{\"step_id\": \"s1\", \"action\": \"read_skill_md\", \"args\": {\"skill_name\": \"pptx\"}}], \"estimated_steps\": 1}",
+  "expected_status": "success",
+  "tags": ["normalization", "action_mapping"]
+}

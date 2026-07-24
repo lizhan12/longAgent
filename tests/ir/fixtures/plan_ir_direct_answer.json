@@ -1,0 +1,6 @@
+{
+  "description": "LLM 直接回答天气问题，返回城市名而非计划",
+  "input": "{\"city\": \"杭州\"}",
+  "expected_status": "repairable",
+  "tags": ["non_plan", "weather", "missing_fields"]
+}

@@ -1,0 +1,6 @@
+{
+  "description": "LLM 用 Markdown 代码块包裹 JSON（常见格式）",
+  "input": "```json\n{\"plan_id\": \"p1\", \"goal\": \"测试\", \"steps\": [], \"estimated_steps\": 0}\n```",
+  "expected_status": "success",
+  "tags": ["format", "markdown"]
+}

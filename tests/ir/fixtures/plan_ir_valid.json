@@ -1,0 +1,6 @@
+{
+  "description": "正常的 PlanIR JSON，包含完整字段",
+  "input": "{\"plan_id\": \"plan_weather_compare\", \"goal\": \"对比杭州和苏州未来一周的天气\", \"steps\": [{\"step_id\": \"step_1\", \"action\": \"query_weather\", \"args\": {\"city\": \"杭州\"}}, {\"step_id\": \"step_2\", \"action\": \"query_weather\", \"args\": {\"city\": \"苏州\"}}, {\"step_id\": \"step_3\", \"action\": \"execute_code\", \"args\": {\"code\": \"import matplotlib\"}, \"depends_on\": [\"step_1\", \"step_2\"]}], \"estimated_steps\": 3}",
+  "expected_status": "success",
+  "tags": ["happy_path", "weather"]
+}
