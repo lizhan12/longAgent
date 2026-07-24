@@ -1340,6 +1340,27 @@ class LongSystem:
                         filtered_stderr = "\n".join(filtered_lines).strip()
                         if filtered_stderr:
                             output_parts.append(f"警告:\n{filtered_stderr}")
+
+                    # 事后检查：代码中提到了 .save / .savefig 但文件没生成
+                    # 常见于 LLM 生成的 python-docx 代码有 bug（如 table.rows[0].cells.text）
+                    # 导致代码执行失败但错误未被检测到
+                    _save_patterns = re.findall(r'\.(?:save|savefig)\([\"\']([^\"\']+)[\"\']', code)
+                    if _save_patterns:
+                        import os as _check_os
+                        ws_root = getattr(self.workspace, "root", None)
+                        if ws_root is not None:
+                            output_dir = str(ws_root / "output")
+                            _missing = []
+                            for _sp in _save_patterns:
+                                _fp = _sp if _check_os.path.isabs(_sp) else _check_os.path.join(output_dir, _sp)
+                                if not _check_os.path.exists(_fp):
+                                    _missing.append(_sp)
+                            if _missing:
+                                output_parts.append(
+                                    f"⚠️ 代码中指定了保存到以下文件，但执行后文件不存在:\n"
+                                    + "\n".join(f"  - {m}" for m in _missing)
+                                )
+
                     # 告知用户输出文件的实际位置
                     ws_root = getattr(self.workspace, "root", None)
                     if ws_root is not None:

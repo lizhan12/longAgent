@@ -1118,6 +1118,10 @@ class PlanExecutor:
         if "Traceback (most recent call last):" in output:
             return True
 
+        # execute_code 步骤的"执行失败"前缀
+        if output.startswith("❌ 执行失败"):
+            return True
+
         # execute_code 步骤特有的错误模式
         if step:
             args = step.args or {}
