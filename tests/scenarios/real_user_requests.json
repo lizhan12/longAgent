@@ -114,6 +114,69 @@
       }
     },
     {
+      "name": "weather_compare_summarize_then_continue",
+      "user_request": "杭州和苏州的天气对比，要图表，要word格式",
+      "description": "LLM 生成 summarize 步骤后继续执行 call_tool（之前状态机拦截的 bug）",
+      "expected_outputs": [".docx", ".png"],
+      "required_tools": ["query_weather", "execute_code", "write_file"],
+      "min_steps": 4,
+      "max_steps": 8,
+      "plan_template": {
+        "plan_id": "plan_weather_compare",
+        "goal": "对比杭州和苏州天气，生成图表和Word文档",
+        "steps": [
+          {
+            "step_id": "step_1",
+            "action": "query_weather",
+            "args": {"city": "杭州"},
+            "depends_on": [],
+            "risk_level": "low"
+          },
+          {
+            "step_id": "step_2",
+            "action": "query_weather",
+            "args": {"city": "苏州"},
+            "depends_on": [],
+            "risk_level": "low"
+          },
+          {
+            "step_id": "step_3",
+            "action": "summarize",
+            "args": {"content": "天气数据汇总"},
+            "depends_on": ["step_1", "step_2"],
+            "risk_level": "low"
+          },
+          {
+            "step_id": "step_4",
+            "action": "execute_code",
+            "args": {
+              "code": "import matplotlib\nmatplotlib.use('Agg')\nimport matplotlib.pyplot as plt\nplt.savefig('output/chart.png')"
+            },
+            "depends_on": ["step_3"],
+            "risk_level": "medium"
+          },
+          {
+            "step_id": "step_5",
+            "action": "write_file",
+            "args": {
+              "path": "output/generate_word.py",
+              "content": "from docx import Document\ndoc = Document()\ndoc.save('output/report.docx')"
+            },
+            "depends_on": ["step_4"],
+            "risk_level": "medium"
+          },
+          {
+            "step_id": "step_6",
+            "action": "execute_file",
+            "args": {"path": "output/generate_word.py"},
+            "depends_on": ["step_5"],
+            "risk_level": "medium"
+          }
+        ],
+        "estimated_steps": 6
+      }
+    },
+    {
       "name": "weather_simple_query",
       "user_request": "杭州今天天气怎么样",
       "description": "用户简单查询天气",

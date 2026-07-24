@@ -69,7 +69,9 @@ OUTPUT_ACTIONS = {"output"}
 CONTROL_ACTIONS = {"abort", "cancel", "budget_exceeded"}
 APPROVAL_ACTIONS = {"wait_approval"}
 
-_DATA_STATES = {AgentState.INIT, AgentState.HAS_DATA, AgentState.VERIFIED}
+# 允许在 GENERATED 状态后继续执行数据采集操作（如生成图表后继续写文件）
+# 不加这个，LLM 生成的计划只要有 summarize 步骤，后续 call_tool 全部被拦截
+_DATA_STATES = {AgentState.INIT, AgentState.HAS_DATA, AgentState.VERIFIED, AgentState.GENERATED}
 _VERIFY_STATES = {AgentState.HAS_DATA, AgentState.VERIFIED, AgentState.GENERATED}
 _OUTPUT_STATES = {AgentState.INIT, AgentState.HAS_DATA, AgentState.VERIFIED, AgentState.GENERATED, AgentState.APPROVED}
 

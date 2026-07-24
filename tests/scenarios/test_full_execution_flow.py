@@ -707,3 +707,53 @@ async def test_step_failure_does_not_block_subsequent_steps():
         assert (output_dir / "after_failure.png").exists(), (
             "步骤2的图表文件未生成"
         )
+
+
+# ======================== 场景 15: summarize 后继续 call_tool ========================
+
+
+def test_summarize_then_continue_call_tool():
+    """验证计划包含 summarize 步骤后还能继续执行 call_tool
+
+    之前用户遇到的 bug：状态机 _DATA_STATES 不包含 GENERATED，
+    导致 LLM 生成的计划只要有 summarize，后续 execute_code/write_file
+    全部被状态机拦截，报错：
+    "动作 'call_tool' 在状态 GENERATED 下不允许"
+    """
+    plan = {
+        "plan_id": "plan_weather_compare",
+        "goal": "对比杭州和苏州天气，生成图表和Word文档",
+        "steps": [
+            {"step_id": "s1", "action": "query_weather", "args": {"city": "杭州"}, "depends_on": [], "risk_level": "low"},
+            {"step_id": "s2", "action": "query_weather", "args": {"city": "苏州"}, "depends_on": [], "risk_level": "low"},
+            {"step_id": "s3", "action": "summarize", "args": {"content": "汇总"}, "depends_on": ["s1", "s2"], "risk_level": "low"},
+            {"step_id": "s4", "action": "execute_code", "args": {"code": "import matplotlib"}, "depends_on": ["s3"], "risk_level": "medium"},
+            {"step_id": "s5", "action": "write_file", "args": {"path": "output/gen.py", "content": "# code"}, "depends_on": ["s4"], "risk_level": "medium"},
+            {"step_id": "s6", "action": "execute_file", "args": {"path": "output/gen.py"}, "depends_on": ["s5"], "risk_level": "medium"},
+        ],
+        "estimated_steps": 6,
+    }
+    from long.ir.ir_parser import IRParser, IRParseStatus
+    from long.ir.constraint_validator import ConstraintValidator
+    from long.ir.state_machine import AgentStateMachine
+    from long.ir.type_checker import TypeChecker
+    from long.ir.ltl import LTLValidator
+    import json
+
+    parser = IRParser()
+    result = parser.parse(json.dumps(plan))
+    assert result.status in (IRParseStatus.SUCCESS, IRParseStatus.REPAIRABLE), str(result.errors)
+    assert result.plan is not None
+
+    # 验证状态机路径检查通过（核心：summarize 后 call_tool 不被拦截）
+    validator = ConstraintValidator(
+        state_machine=AgentStateMachine(),
+        type_checker=TypeChecker(),
+        ltl_validator=LTLValidator(),
+    )
+    validation = validator.validate_plan(result.plan)
+    assert validation.valid, (
+        f"summarize 后 call_tool 被状态机拦截!\n"
+        f"错误: {validation.errors}\n"
+        f"这是之前用户遇到的真实 bug"
+    )
