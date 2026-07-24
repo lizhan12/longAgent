@@ -44,9 +44,9 @@
 
 | 特性 | 说明 |
 |------|------|
-| 三级执行策略 | 计划模式 > 认知运行时 > 降级模式，按任务复杂度自动选择 |
+| 两级执行策略 | 计划模式（含交付物验证/自动修复）> 降级模式，计划失败时兜底 |
 | 形式化约束 | 状态机（路径合法）+ LTL（时序合规）+ Runtime（Schema/白名单/预算） |
-| 认知运行时 | Think-Act-Observe-Reflect-Plan-Output 状态图循环 |
+| 认知运行时 | Think-Act-Observe-Reflect-Plan-Output 状态图循环（模块已实现，当前未接入主链路） |
 | 三栖记忆 | 短期记忆 + 工作记忆 + 语义记忆，含衰减与晋升机制 |
 | 沙箱执行 | 进程级隔离，12 种恶意代码模式预扫描，资源限制 |
 | 多智能体 | P-W-E 三栖拓扑（Planner/Worker/Escalation），声明式子 Agent |
@@ -137,29 +137,38 @@
 
 ### 2.2 三级执行策略
 
-系统根据任务复杂度自动选择执行策略：
+系统对所有请求统一先生成 PlanIR，无法用计划完成时降级为直接工具调用：
 
 ```
 用户输入
     │
     ▼
-TaskComplexityClassifier.classify()
+_try_plan_execution() — 所有请求统一先生成 PlanIR
     │
-    ├── SIMPLE (score < 1.5) ──────→ Fallback 降级模式
-    │                                  直接 while 循环工具调用
-    │                                  最多 8 轮
+    ├── 计划生成失败/超时（180s，重试 1 次）──┐
+    ├── 编译时验证不通过 ────────────────────┤
+    ├── 空计划 / 单步且无 content ───────────┤
+    │                                        ▼
+    │                              Fallback 降级模式
+    │                              直接 for 循环工具调用
+    │                              最多 8 轮，搜索上限 2 次
     │
-    ├── MODERATE (1.5 ≤ score < 4.0) → Cognitive 认知运行时
-    │                                  StateGraph 循环
-    │                                  Think→Act→Observe→Reflect→Plan→Output
-    │
-    └── COMPLEX (score ≥ 4.0) ──────→ Plan 计划模式
-                                       LLM 生成 PlanIR
-                                       约束验证 → 受控执行
-                                       最多 2 次重试
+    └── 多步计划 ──→ 受控执行（状态机 + LTL + 约束检查）
+                        │
+                        ├── 执行失败 ──────────────→ Fallback 降级模式
+                        │
+                        └── 执行成功
+                              ├── 交付物验证（文件存在 + 内容质量）
+                              │     └── 不通过 → 自动修复（LLM 重写 + 重跑脚本）
+                              │            └── 修复失败 → Fallback 降级模式
+                              └── 输出交付物（报告正文 / 图表 / 文件下载链接）
 ```
 
-**降级规则**：Plan 模式失败 → 降级到 Cognitive 模式 → 再失败 → 降级到 Fallback 模式。
+**降级规则**：Plan 模式的任一环节失败（生成、验证、执行、交付物修复）→ 降级到 Fallback 模式。
+
+> 说明：`TaskComplexityClassifier`（`cognitive/planner.py`）与 `CognitiveRuntime`
+> （`cognitive/runtime.py`）当前**不在主执行链路上**——主链路不做复杂度分流，
+> 所有请求都先尝试生成计划。这两个模块保留供后续接入与独立测试使用。
 
 ### 2.3 模块依赖关系
 
@@ -230,10 +239,10 @@ main.py
 1. **初始化 20+ 子模块**（`initialize()`, L149-340），按依赖顺序：
    - Workspace → LLM → StateMachine → ToolRegistry → Memory → MCP → Skill → Sandbox → SubAgent → FeatureFlag → OutputGuard → AlertManager → EvalPipeline → Optimizer → PlanExecutor → Components
 
-2. **三级执行策略**（`_chat_with_tools_loop()`）：
-   - `_try_plan_execution()` — 结构化计划模式
-   - `_cognitive_runtime_loop()` — 认知运行时模式
-   - `_fallback_tool_call_loop()` — 降级模式
+2. **两级执行策略**（`_chat_with_tools_loop()`）：
+   - `_try_plan_execution()` — 结构化计划模式（含交付物验证 `_verify_plan_deliverables`、
+     自动修复 `_repair_plan_deliverables`、交付物输出 `_print_generated_files`）
+   - `_fallback_tool_call_loop()` — 降级模式（计划模式任一环节失败时兜底）
 
 3. **9 个内置工具注册**（`_register_local_tools()`）：
 
@@ -576,8 +585,11 @@ execute_plan()
 |------|-----|
 | 文件 | cognitive/runtime.py |
 | 行数 | 1742 |
+| 接入状态 | **当前未接入主执行链路**（`cli.py` 主链路为 计划模式 → 降级模式两级） |
 
-认知运行时是系统最核心的创新组件，基于状态图实现认知循环。
+认知运行时基于状态图实现认知循环。模块本身已实现并有独立测试覆盖
+（`tests/cognitive/`），但主链路当前不调用它——如需启用，需在
+`_chat_with_tools_loop()` 中于计划模式与降级模式之间接入。
 
 #### StateGraph 状态图引擎
 

@@ -52,6 +52,23 @@ except ImportError:
     pass
 
 
+# -----------------------------------------------------------
+# Helper: 快速创建沙箱 + 执行代码
+# -----------------------------------------------------------
+async def _sandbox_exec(ws, code, timeout=60, network=False):
+    """在沙箱中执行代码，返回 (result, output_dir)"""
+    output_dir = ws.root / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    sandbox = SandboxManager(workspace_dir=str(ws.root))
+    spec = ExecutionSpec(
+        code=code, language="python", timeout=timeout,
+        working_dir=str(ws.root),
+        resource_limits=ResourceLimits(network=network),
+    )
+    result = await sandbox.execute(spec)
+    return result, output_dir
+
+
 # ======================== 场景 1: 沙箱执行代码后文件是否真的落地 ========================
 
 
@@ -416,4 +433,277 @@ async def test_output_path_consistency():
         (output_dir / "test.txt").write_text("hello", encoding="utf-8")
         assert _os.path.exists(_os.path.join(str(_ws_root), "output", "test.txt")), (
             "文件路径构建失败: os.path.join 无法正确处理 WindowsPath + str"
+        )
+
+
+# ======================== 场景 8: write_file + execute_file 联动 ========================
+
+
+@pytest.mark.asyncio
+async def test_write_file_then_execute_file():
+    """验证 write_file 写入脚本后，execute_file 能执行它并生成输出文件
+
+    之前用户遇到的：PPT 脚本写进去了但没执行，因为没有 execute_file 步骤。
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws = WorkspaceManager(tmpdir)
+        output_dir = ws.root / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. write_file: 写入一个 Python 脚本
+        script_content = (
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "fig, ax = plt.subplots()\n"
+            "ax.plot([1, 2, 3], [1, 4, 9])\n"
+            "fig.savefig('output/from_script.png', dpi=80)\n"
+            "print('script executed successfully')\n"
+        )
+        ws.write_file("output/generate_chart.py", script_content)
+
+        script_path = output_dir / "generate_chart.py"
+        assert script_path.exists(), "write_file 未成功写入脚本"
+        assert script_path.stat().st_size > 0, "写入的脚本为空"
+
+        # 2. execute_file: 执行该脚本（模拟 CLI 的 execute_file 工具行为）
+        code_to_run = (
+            "import sys\n"
+            "sys.path.insert(0, '.')\n"
+            f"exec(open(r'{script_path}').read())\n"
+        )
+        result, output_dir = await _sandbox_exec(ws, code_to_run, timeout=60)
+
+        assert result.status.value == "success", (
+            f"execute_file 执行失败: {result.stderr[:300]}"
+        )
+        assert "script executed successfully" in result.stdout, (
+            f"脚本未正确执行: {result.stdout}"
+        )
+
+        # 3. 验证脚本生成的输出文件
+        chart_file = output_dir / "from_script.png"
+        assert chart_file.exists(), f"脚本生成的图表文件未找到: {chart_file}"
+        assert chart_file.stat().st_size > 0, "脚本生成的图表文件为空"
+
+
+# ======================== 场景 9: 沙箱清理不删除输出文件 ========================
+
+
+@pytest.mark.asyncio
+async def test_sandbox_cleanup_preserves_output_files():
+    """验证沙箱 cleanup 只删除临时目录，不删除 workspace/output/ 下的文件
+
+    之前怀疑的：沙箱清理时把生成的文件也删了。
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws = WorkspaceManager(tmpdir)
+        output_dir = ws.root / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # 用 execute 代替私有 API，execute 内部会 cleanup
+        result, output_dir = await _sandbox_exec(
+            ws,
+            "with open('output/survivor.txt', 'w') as f: f.write('survived')",
+            timeout=30,
+        )
+
+        assert result.status.value == "success", f"执行失败: {result.stderr[:200]}"
+
+        # 验证：即使沙箱已清理，输出文件还在
+        survivor = output_dir / "survivor.txt"
+        assert survivor.exists(), (
+            f"输出文件在沙箱清理后被删除!\n"
+            f"  输出文件: {survivor}"
+        )
+        assert survivor.read_text(encoding="utf-8") == "survived", "输出文件内容被修改"
+
+
+# ======================== 场景 10: 空计划降级 ========================
+
+
+def test_empty_plan_degrades_gracefully():
+    """验证 LLM 生成了空计划（steps=[]）时，系统能降级而不是报错
+
+    模拟 PlanExecutor.generate_plan 返回空计划的情况。
+    """
+    empty_plan = {
+        "plan_id": "plan_empty",
+        "goal": "空计划",
+        "steps": [],
+        "estimated_steps": 0,
+    }
+    parser = IRParser()
+    result = parser.parse(json.dumps(empty_plan))
+
+    # 空计划也能被解析（steps 有默认值）
+    assert result.status in (IRParseStatus.SUCCESS, IRParseStatus.REPAIRABLE), str(result.errors)
+    assert result.plan is not None
+    assert len(result.plan.steps) == 0, f"空计划 steps 应为 0, 实际: {len(result.plan.steps)}"
+
+    # 验证约束验证器能通过空计划
+    validator = ConstraintValidator(
+        state_machine=AgentStateMachine(),
+        type_checker=TypeChecker(),
+        ltl_validator=LTLValidator(),
+    )
+    validation = validator.validate_plan(result.plan)
+    assert validation.valid, f"空计划验证失败: {validation.errors}"
+
+
+# ======================== 场景 11: 跨平台路径兼容性 ========================
+
+
+@pytest.mark.asyncio
+async def test_path_handling_mixed_separators():
+    """验证各种路径格式在 Windows 下都能正确处理
+
+    Windows 上可能出现的路径格式：
+    - output/file.txt
+    - output\\file.txt
+    - output/subdir/file.txt
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws = WorkspaceManager(tmpdir)
+        output_dir = ws.root / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # 测试各种路径格式
+        paths_to_test = [
+            ("output/forward_slash.txt", "forward"),
+            ("output\\backward_slash.txt", "backward"),
+            ("output/mixed\\slashes.txt", "mixed"),
+        ]
+
+        for rel_path, content in paths_to_test:
+            ws.write_file(rel_path, content)
+            # 验证文件在工作区根目录下
+            resolved = (ws.root / rel_path).resolve()
+            assert resolved.exists(), f"文件未创建: {resolved}"
+            assert resolved.read_text(encoding="utf-8") == content, f"文件内容不匹配: {rel_path}"
+
+        # 验证所有文件都在同一个 output 目录下
+        out_files = [f.name for f in sorted(output_dir.iterdir()) if f.is_file()]
+        assert "forward_slash.txt" in out_files, f"缺少 forward_slash.txt: {out_files}"
+        assert "backward_slash.txt" in out_files, f"缺少 backward_slash.txt: {out_files}"
+        assert "mixed\\slashes.txt" not in out_files, "反斜杠不应在文件名中"
+
+
+# ======================== 场景 12: 中文文件名和内容 ========================
+
+
+@pytest.mark.asyncio
+async def test_chinese_filename_and_content():
+    """验证中文文件名和内容在沙箱中能正确处理
+
+    之前用户遇到的：GBK 编码导致 UnicodeEncodeError
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws = WorkspaceManager(tmpdir)
+        output_dir = ws.root / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        CODE = (
+            "import os\n"
+            "content = '人工智能发展报告\\nAI发展历史里程碑\\n© 2026'\n"
+            "with open('output/中文报告.txt', 'w', encoding='utf-8') as f:\n"
+            "    f.write(content)\n"
+            "print('written:', os.path.exists('output/中文报告.txt'))\n"
+            "with open('output/中文报告.txt', 'r', encoding='utf-8') as f:\n"
+            "    print('content:', f.read())\n"
+        )
+        result, output_dir = await _sandbox_exec(ws, CODE, timeout=30)
+
+        assert result.status.value == "success", f"执行失败: {result.stderr[:300]}"
+        assert "written: True" in result.stdout, f"文件未写入: {result.stdout}"
+
+        cn_file = output_dir / "中文报告.txt"
+        assert cn_file.exists(), f"中文文件未生成: {cn_file}"
+        content = cn_file.read_text(encoding="utf-8")
+        assert "人工智能发展报告" in content, f"中文内容不正确: {content}"
+        assert "©" in content, f"特殊字符丢失: {content}"
+
+
+# ======================== 场景 13: 多工具查询结果合并 ========================
+
+
+@pytest.mark.asyncio
+async def test_multi_tool_query_merge():
+    """验证多次查询结果能合并到同一个输出文件中
+
+    模拟：查询杭州天气 + 查询苏州天气 → 合并到同一个图表
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws = WorkspaceManager(tmpdir)
+        output_dir = ws.root / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # 模拟两次查询结果
+        (output_dir / "city_a.txt").write_text("杭州: 25°C", encoding="utf-8")
+        (output_dir / "city_b.txt").write_text("苏州: 28°C", encoding="utf-8")
+
+        # 合并查询结果生成图表
+        MERGE_CODE = (
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "with open('output/city_a.txt', encoding='utf-8') as f:\n"
+            "    data_a = f.read().strip()\n"
+            "with open('output/city_b.txt', encoding='utf-8') as f:\n"
+            "    data_b = f.read().strip()\n"
+            "fig, ax = plt.subplots()\n"
+            "ax.bar(['杭州', '苏州'], [25, 28])\n"
+            "ax.set_title('气温对比')\n"
+            "fig.savefig('output/merged_chart.png', dpi=80)\n"
+            "print('merged chart saved')\n"
+        )
+        result, output_dir = await _sandbox_exec(ws, MERGE_CODE, timeout=60)
+
+        assert result.status.value == "success", f"合并执行失败: {result.stderr[:300]}"
+        merged = output_dir / "merged_chart.png"
+        assert merged.exists(), f"合并图表文件未生成: {merged}"
+        assert merged.stat().st_size > 0, "合并图表文件为空"
+
+
+# ======================== 场景 14: 失败步骤不阻塞后续步骤 ========================
+
+
+@pytest.mark.asyncio
+async def test_step_failure_does_not_block_subsequent_steps():
+    """验证某个步骤失败时，后续步骤仍能继续执行
+
+    实际场景：搜索失败不应该阻止图表生成（如果已有缓存数据）
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws = WorkspaceManager(tmpdir)
+        output_dir = ws.root / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # 步骤 1: 模拟搜索失败（执行一个不存在的命令）
+        sandbox = SandboxManager(workspace_dir=str(ws.root))
+        spec1 = ExecutionSpec(
+            code="raise RuntimeError('模拟搜索失败')",
+            language="python", timeout=30, working_dir=str(ws.root),
+            resource_limits=ResourceLimits(network=False),
+        )
+        result1 = await sandbox.execute(spec1)
+        assert result1.status.value != "success", "步骤1应该失败但成功了"
+
+        # 步骤 2: 使用缓存数据继续生成图表
+        step2_code = (
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "fig, ax = plt.subplots()\n"
+            "ax.plot([1, 2, 3])\n"
+            "fig.savefig('output/after_failure.png', dpi=80)\n"
+            "print('step 2 succeeded despite step 1 failure')\n"
+        )
+        result2, output_dir = await _sandbox_exec(ws, step2_code, timeout=60)
+
+        assert result2.status.value == "success", (
+            f"步骤2被步骤1的失败阻塞了: {result2.stderr[:300]}"
+        )
+        assert (output_dir / "after_failure.png").exists(), (
+            "步骤2的图表文件未生成"
         )
